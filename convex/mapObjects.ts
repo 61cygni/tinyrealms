@@ -80,13 +80,23 @@ export const toggle = mutation({
   },
 });
 
-/** Bulk save: remove all objects for a map and re-insert. Requires map editor. */
+/**
+ * Bulk save: sync placed objects for a map.
+ *
+ * Objects that already exist in the DB (identified by `existingId`) are
+ * **patched** — only position / layer / spriteDefName are updated.  Runtime
+ * state like `isOn` is left untouched so toggles survive an editor save.
+ *
+ * Objects without an `existingId` are inserted as new.
+ * Existing DB objects not present in the incoming list are deleted.
+ */
 export const bulkSave = mutation({
   args: {
     profileId: v.id("profiles"),
     mapName: v.string(),
     objects: v.array(
       v.object({
+        existingId: v.optional(v.id("mapObjects")),
         spriteDefName: v.string(),
         instanceName: v.optional(v.string()),
         x: v.float64(),
@@ -94,27 +104,49 @@ export const bulkSave = mutation({
         layer: v.number(),
         scaleOverride: v.optional(v.number()),
         flipX: v.optional(v.boolean()),
-        isOn: v.optional(v.boolean()),
       })
     ),
   },
   handler: async (ctx, { profileId, mapName, objects }) => {
     await requireMapEditor(ctx, profileId, mapName);
-    // Delete existing
+
+    // Load existing objects on this map
     const existing = await ctx.db
       .query("mapObjects")
       .withIndex("by_map", (q) => q.eq("mapName", mapName))
       .collect();
-    for (const obj of existing) {
-      await ctx.db.delete(obj._id);
-    }
-    // Insert new
+    const existingById = new Map(existing.map((o) => [o._id, o]));
+
+    // Track which existing IDs are still present in the editor
+    const keptIds = new Set<string>();
+
+    const now = Date.now();
+
     for (const obj of objects) {
-      await ctx.db.insert("mapObjects", {
-        mapName,
-        ...obj,
-        updatedAt: Date.now(),
-      });
+      const { existingId, ...fields } = obj;
+
+      if (existingId && existingById.has(existingId)) {
+        // Existing object — patch position / layout only; preserve isOn
+        keptIds.add(existingId);
+        await ctx.db.patch(existingId, {
+          ...fields,
+          updatedAt: now,
+        });
+      } else {
+        // New object
+        await ctx.db.insert("mapObjects", {
+          mapName,
+          ...fields,
+          updatedAt: now,
+        });
+      }
+    }
+
+    // Delete objects removed by the editor
+    for (const old of existing) {
+      if (!keptIds.has(old._id)) {
+        await ctx.db.delete(old._id);
+      }
     }
 
     // Sync NPC runtime state (creates/removes npcState rows as needed)

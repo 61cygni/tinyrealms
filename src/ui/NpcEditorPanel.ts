@@ -672,7 +672,7 @@ export class NpcEditorPanel {
 
     const stats = p.stats ?? DEFAULT_STATS;
     for (const key of Object.keys(this.statInputs)) {
-      this.statInputs[key].value = String((stats as Record<string, number>)[key] ?? 0);
+      this.statInputs[key].value = String((stats as unknown as Record<string, number>)[key] ?? 0);
     }
 
     this.renderItems();

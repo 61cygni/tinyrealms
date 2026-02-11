@@ -49,10 +49,11 @@ interface MapSummary {
   tileWidth: number;
   tileHeight: number;
   status: string;
-  isHub: boolean;
+  mapType: string;
   combatEnabled: boolean;
   musicUrl?: string;
   creatorProfileId?: string;
+  ownedByCurrentUser?: boolean;
   editors: string[];
   portalCount: number;
   updatedAt: number;
@@ -135,6 +136,15 @@ export class MapBrowser {
     if (this.maps.length === 0) {
       this.bodyEl.innerHTML = '<div style="padding:20px;text-align:center;color:#888;">No maps yet. Create one below!</div>';
     } else {
+      const legend = document.createElement("div");
+      legend.className = "map-visibility-legend";
+      legend.innerHTML = `
+        <span class="map-legend-item"><span class="map-badge private">Private</span> owner-only portal targets</span>
+        <span class="map-legend-item"><span class="map-badge public">Public</span> superusers can link portals</span>
+        <span class="map-legend-item"><span class="map-badge system">System</span> global/start-map eligible</span>
+      `;
+      this.bodyEl.appendChild(legend);
+
       const list = document.createElement("div");
       list.className = "map-list";
 
@@ -145,7 +155,7 @@ export class MapBrowser {
         // Icon
         const iconEl = document.createElement("div");
         iconEl.className = "map-card-icon";
-        iconEl.textContent = m.isHub ? "\uD83C\uDFE0" : m.combatEnabled ? "\u2694" : "\uD83D\uDDFA"; // 🏠⚔🗺
+        iconEl.textContent = m.mapType === "system" ? "\uD83C\uDFE0" : m.combatEnabled ? "\u2694" : "\uD83D\uDDFA"; // 🏠⚔🗺
 
         // Info
         const info = document.createElement("div");
@@ -164,10 +174,20 @@ export class MapBrowser {
         // Badges
         const badges = document.createElement("div");
         badges.className = "map-card-badges";
-        if (m.isHub) {
+        if (m.mapType === "system") {
           const b = document.createElement("span");
-          b.className = "map-badge hub";
-          b.textContent = "Hub";
+          b.className = "map-badge system";
+          b.textContent = "System";
+          badges.appendChild(b);
+        } else if (m.mapType === "public") {
+          const b = document.createElement("span");
+          b.className = "map-badge public";
+          b.textContent = "Public";
+          badges.appendChild(b);
+        } else {
+          const b = document.createElement("span");
+          b.className = "map-badge private";
+          b.textContent = "Private";
           badges.appendChild(b);
         }
         if (m.status === "draft") {
@@ -181,6 +201,59 @@ export class MapBrowser {
           b.className = "map-badge combat";
           b.textContent = "Combat";
           badges.appendChild(b);
+        }
+
+        // Type controls: owners can set public/private on their own maps.
+        // System maps can only be changed by superusers via CLI.
+        const isSystemMap = m.mapType === "system";
+        const canEditType = !isSystemMap && (!!m.ownedByCurrentUser || this.callbacks.isAdmin);
+        if (canEditType) {
+          const typeWrap = document.createElement("div");
+          typeWrap.className = "map-card-badges";
+          typeWrap.style.gap = "6px";
+
+          const typeSelect = document.createElement("select");
+          typeSelect.className = "profile-select";
+          typeSelect.style.maxWidth = "110px";
+          typeSelect.innerHTML = `<option value="private">private</option><option value="public">public</option>`;
+          typeSelect.value = m.mapType ?? "private";
+
+          const saveTypeBtn = document.createElement("button");
+          saveTypeBtn.className = "map-card-travel";
+          saveTypeBtn.textContent = "Save Type";
+          saveTypeBtn.style.width = "auto";
+          saveTypeBtn.style.padding = "8px 10px";
+          saveTypeBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            saveTypeBtn.disabled = true;
+            const original = saveTypeBtn.textContent;
+            saveTypeBtn.textContent = "Saving...";
+            try {
+              const convex = getConvexClient();
+              await convex.mutation((api as any).maps.updateMetadata, {
+                profileId: this.callbacks.getProfileId() as Id<"profiles">,
+                name: m.name,
+                mapType: typeSelect.value,
+              } as any);
+              saveTypeBtn.textContent = "Saved";
+              await this.refresh();
+            } catch (err: any) {
+              saveTypeBtn.textContent = "Error";
+              console.warn("set map type failed:", err);
+              setTimeout(() => {
+                saveTypeBtn.textContent = original || "Save Type";
+                saveTypeBtn.disabled = false;
+              }, 900);
+              return;
+            }
+            setTimeout(() => {
+              saveTypeBtn.textContent = original || "Save Type";
+              saveTypeBtn.disabled = false;
+            }, 900);
+          });
+
+          typeWrap.append(typeSelect, saveTypeBtn);
+          info.appendChild(typeWrap);
         }
 
         // Travel button
@@ -206,26 +279,24 @@ export class MapBrowser {
       this.bodyEl.appendChild(list);
     }
 
-    // Create new map section (admin only)
-    if (this.callbacks.isAdmin) {
-      const section = document.createElement("div");
-      section.className = "map-create-section";
+    // Create new map section (any authenticated profile)
+    const section = document.createElement("div");
+    section.className = "map-create-section";
 
-      if (!this.createFormVisible) {
-        const toggleBtn = document.createElement("button");
-        toggleBtn.className = "map-create-toggle";
-        toggleBtn.textContent = "+ Create New Map";
-        toggleBtn.addEventListener("click", () => {
-          this.createFormVisible = true;
-          this.render();
-        });
-        section.appendChild(toggleBtn);
-      } else {
-        section.appendChild(this.buildCreateForm());
-      }
-
-      this.bodyEl.appendChild(section);
+    if (!this.createFormVisible) {
+      const toggleBtn = document.createElement("button");
+      toggleBtn.className = "map-create-toggle";
+      toggleBtn.textContent = "+ Create New Map";
+      toggleBtn.addEventListener("click", () => {
+        this.createFormVisible = true;
+        this.render();
+      });
+      section.appendChild(toggleBtn);
+    } else {
+      section.appendChild(this.buildCreateForm());
     }
+
+    this.bodyEl.appendChild(section);
   }
 
   private buildCreateForm(): HTMLElement {
@@ -248,7 +319,7 @@ export class MapBrowser {
     widthInput.type = "number";
     widthInput.value = "30";
     widthInput.min = "10";
-    widthInput.max = "200";
+    widthInput.max = "400";
     widthLabel.appendChild(widthInput);
 
     const heightLabel = document.createElement("label");
@@ -257,7 +328,7 @@ export class MapBrowser {
     heightInput.type = "number";
     heightInput.value = "30";
     heightInput.min = "10";
-    heightInput.max = "200";
+    heightInput.max = "400";
     heightLabel.appendChild(heightInput);
 
     // Tileset (optional — can be changed later in the editor)
@@ -318,12 +389,13 @@ export class MapBrowser {
     combatCheck.type = "checkbox";
     combatLabel.appendChild(combatCheck);
 
-    // Hub toggle
-    const hubLabel = document.createElement("label");
-    hubLabel.innerHTML = `<span>Is Hub (spawn map)</span>`;
-    const hubCheck = document.createElement("input");
-    hubCheck.type = "checkbox";
-    hubLabel.appendChild(hubCheck);
+    // Map type (owners: public/private, superusers: +system)
+    const mapTypeLabel = document.createElement("label");
+    mapTypeLabel.className = "full-width";
+    mapTypeLabel.textContent = "Map Type";
+    const mapTypeSelect = document.createElement("select");
+    mapTypeSelect.innerHTML = `<option value="private">private</option><option value="public">public</option>`;
+    mapTypeLabel.appendChild(mapTypeSelect);
 
     // Status message
     const statusEl = document.createElement("div");
@@ -378,8 +450,8 @@ export class MapBrowser {
           tilesetPxH,
           musicUrl: musicSelect.value || undefined,
           combatEnabled: combatCheck.checked,
-          isHub: hubCheck.checked,
-        });
+          mapType: mapTypeSelect.value,
+        } as any);
 
         statusEl.className = "map-create-status full-width success";
         statusEl.textContent = `Map "${name}" created!`;
@@ -402,7 +474,8 @@ export class MapBrowser {
       widthLabel, heightLabel,
       tsLabel,
       musicLabel,
-      combatLabel, hubLabel,
+      combatLabel,
+      mapTypeLabel,
       statusEl,
       actions,
     );

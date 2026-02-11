@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireMapEditor } from "./lib/requireMapEditor";
-import { requireAdmin } from "./lib/requireAdmin";
+import { requireMapEditor, isMapOwner } from "./lib/requireMapEditor";
+import { requireSuperuser } from "./lib/requireSuperuser";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -23,12 +24,38 @@ export const listPublished = query({
   },
 });
 
-/** List map summaries (lightweight, no tile data) */
+/**
+ * List map summaries (lightweight, no tile data).
+ * Returns only maps the user should see:
+ *   - "system" maps (visible to everyone)
+ *   - Maps owned by the current user
+ * Superusers see all maps.
+ */
 export const listSummaries = query({
   args: {},
   handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
     const all = await ctx.db.query("maps").collect();
-    return all.map((m) => ({
+
+    // Check if the user is a superuser (see all maps)
+    let isSuperuser = false;
+    if (userId) {
+      const profiles = await ctx.db
+        .query("profiles")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .collect();
+      isSuperuser = profiles.some((p) => (p as any).role === "superuser");
+    }
+
+    const filtered = all.filter((m) => {
+      if (isSuperuser) return true;
+      const mapType = (m as any).mapType ?? "private";
+      if (mapType === "system") return true;
+      if (userId && (m as any).createdBy === userId) return true;
+      return false;
+    });
+
+    return filtered.map((m) => ({
       _id: m._id,
       name: m.name,
       width: m.width,
@@ -36,16 +63,48 @@ export const listSummaries = query({
       tileWidth: m.tileWidth,
       tileHeight: m.tileHeight,
       status: (m as any).status ?? "published",
-      isHub: (m as any).isHub ?? false,
+      mapType: (m as any).mapType ?? "private",
       combatEnabled: (m as any).combatEnabled ?? false,
       musicUrl: (m as any).musicUrl,
       creatorProfileId: (m as any).creatorProfileId,
+      createdBy: (m as any).createdBy,
+      ownedByCurrentUser: !!(userId && (m as any).createdBy === userId),
       editors: (m as any).editors ?? [],
       portalCount: ((m as any).portals ?? []).length,
+      labelNames: (m.labels ?? []).map((l: any) => l.name as string),
       updatedAt: m.updatedAt,
     }));
   },
 });
+
+/**
+ * List maps available as starting worlds when creating a profile.
+ * Includes: "system" maps + maps created by the current user.
+ */
+export const listStartMaps = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await getAuthUserId(ctx);
+    const all = await ctx.db.query("maps").collect();
+
+    return all
+      .filter((m) => {
+        const mapType = (m as any).mapType ?? "private";
+        if (mapType === "system") return true;
+        // Include maps the current user created
+        if (userId && (m as any).createdBy === userId) return true;
+        return false;
+      })
+      .map((m) => ({
+        name: m.name,
+        mapType: (m as any).mapType ?? "private",
+        labelNames: (m.labels ?? []).map((l: any) => l.name as string),
+      }));
+  },
+});
+
+/** Default starting map name (used as fallback when a profile has no mapName) */
+export const DEFAULT_START_MAP = "cozy-cabin";
 
 export const get = query({
   args: { mapId: v.id("maps") },
@@ -95,7 +154,58 @@ const layerValidator = v.object({
   visible: v.boolean(),
 });
 
-/** Create a brand-new empty map. Requires admin. */
+const mapTypeValidator = v.union(
+  v.literal("public"),
+  v.literal("private"),
+  v.literal("system"),
+);
+
+/**
+ * Validate portal permissions.
+ * - Regular users can only create portals between maps they own.
+ * - Superusers can create cross-user portals only to public/system maps.
+ */
+async function validatePortals(
+  ctx: any,
+  profileId: any,
+  sourceMapName: string,
+  portals: Array<{ targetMap: string; [key: string]: any }>,
+) {
+  if (!portals || portals.length === 0) return;
+
+  const profile = await ctx.db.get(profileId);
+  if (!profile) throw new Error("Profile not found");
+
+  const isSuperuser = (profile as any).role === "superuser";
+
+  for (const portal of portals) {
+    if (portal.targetMap === sourceMapName) continue; // portal within same map is always OK
+    const ownsTarget = await isMapOwner(ctx, profileId, portal.targetMap);
+    if (ownsTarget) continue;
+
+    if (!isSuperuser) {
+      throw new Error(
+        `Permission denied: you cannot create a portal to "${portal.targetMap}" ` +
+        `because you don't own that map. Only superusers can create cross-user portals.`
+      );
+    }
+
+    const target = await ctx.db
+      .query("maps")
+      .withIndex("by_name", (q: any) => q.eq("name", portal.targetMap))
+      .first();
+    if (!target) throw new Error(`Target map "${portal.targetMap}" not found`);
+    const targetType = (target as any).mapType ?? "private";
+    if (targetType !== "public" && targetType !== "system") {
+      throw new Error(
+        `Permission denied: "${portal.targetMap}" is private. ` +
+        `Set map type to "public" for cross-user portal links.`
+      );
+    }
+  }
+}
+
+/** Create a brand-new empty map. Any authenticated user can create maps. */
 export const create = mutation({
   args: {
     profileId: v.id("profiles"),
@@ -110,10 +220,19 @@ export const create = mutation({
     musicUrl: v.optional(v.string()),
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
-    isHub: v.optional(v.boolean()),
+    mapType: v.optional(mapTypeValidator),
   },
   handler: async (ctx, args) => {
-    await requireAdmin(ctx, args.profileId);
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const profile = await ctx.db.get(args.profileId);
+    if (!profile) throw new Error("Profile not found");
+    if (profile.userId !== userId) throw new Error("Not your profile");
+    const mapType = args.mapType ?? "private";
+    if (mapType === "system" && (profile as any).role !== "superuser") {
+      throw new Error(`Only superusers can set map type to "system"`);
+    }
 
     // Unique name check
     const existing = await ctx.db
@@ -128,16 +247,6 @@ export const create = mutation({
     const emptyCollision = JSON.stringify(
       new Array(args.width * args.height).fill(false),
     );
-
-    // If this is marked as hub, unmark any existing hub
-    if (args.isHub) {
-      const all = await ctx.db.query("maps").collect();
-      for (const m of all) {
-        if ((m as any).isHub) {
-          await ctx.db.patch(m._id, { isHub: false } as any);
-        }
-      }
-    }
 
     return await ctx.db.insert("maps", {
       name: args.name,
@@ -165,15 +274,16 @@ export const create = mutation({
       ambientSoundUrl: args.ambientSoundUrl,
       combatEnabled: args.combatEnabled ?? false,
       status: "draft",
-      isHub: args.isHub ?? false,
+      mapType,
       editors: [args.profileId],
       creatorProfileId: args.profileId,
+      createdBy: userId,
       updatedAt: Date.now(),
     });
   },
 });
 
-/** Save the full map state (upsert by name). Requires map editor or admin. */
+/** Save the full map state (upsert by name). Requires map editor or superuser. */
 export const saveFullMap = mutation({
   args: {
     profileId: v.id("profiles"),
@@ -194,14 +304,33 @@ export const saveFullMap = mutation({
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
     status: v.optional(v.string()),
+    mapType: v.optional(mapTypeValidator),
   },
   handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
     await requireMapEditor(ctx, args.profileId, args.name);
+
+    // Validate portal permissions (cross-user portals require superuser)
+    if (args.portals && args.portals.length > 0) {
+      await validatePortals(ctx, args.profileId, args.name, args.portals);
+    }
 
     const existing = await ctx.db
       .query("maps")
       .withIndex("by_name", (q) => q.eq("name", args.name))
       .first();
+
+    // Determine mapType: explicit arg > existing value > "private"
+    let mapType: string;
+    if (args.mapType) {
+      mapType = args.mapType;
+    } else if (existing) {
+      mapType = (existing as any).mapType ?? "private";
+    } else {
+      mapType = "private";
+    }
 
     const data = {
       name: args.name,
@@ -221,6 +350,7 @@ export const saveFullMap = mutation({
       ambientSoundUrl: args.ambientSoundUrl,
       combatEnabled: args.combatEnabled,
       status: args.status,
+      mapType,
       updatedAt: Date.now(),
     };
 
@@ -232,12 +362,13 @@ export const saveFullMap = mutation({
         ...data,
         editors: [args.profileId],
         creatorProfileId: args.profileId,
+        createdBy: userId,
       } as any);
     }
   },
 });
 
-/** Update map metadata (music, combat, status, editors). Requires map editor. */
+/** Update map metadata (music, combat, status). Requires map editor. */
 export const updateMetadata = mutation({
   args: {
     profileId: v.id("profiles"),
@@ -246,7 +377,7 @@ export const updateMetadata = mutation({
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
     status: v.optional(v.string()),
-    isHub: v.optional(v.boolean()),
+    mapType: v.optional(mapTypeValidator),
   },
   handler: async (ctx, { profileId, name, ...updates }) => {
     await requireMapEditor(ctx, profileId, name);
@@ -257,13 +388,21 @@ export const updateMetadata = mutation({
       .first();
     if (!map) throw new Error(`Map "${name}" not found`);
 
-    // If marking as hub, unmark others
-    if (updates.isHub) {
-      const all = await ctx.db.query("maps").collect();
-      for (const m of all) {
-        if ((m as any).isHub && m._id !== map._id) {
-          await ctx.db.patch(m._id, { isHub: false } as any);
-        }
+    if (updates.mapType !== undefined) {
+      const profile = await ctx.db.get(profileId);
+      if (!profile) throw new Error("Profile not found");
+      const isSuperuser = (profile as any).role === "superuser";
+      const owner = await isMapOwner(ctx, profileId, name);
+      if (!owner && !isSuperuser) {
+        throw new Error("Only the map owner or a superuser can change map type");
+      }
+      if (updates.mapType === "system" && !isSuperuser) {
+        throw new Error(`Only superusers can set map type to "system"`);
+      }
+      // Prevent non-superusers from changing a system map's type
+      const currentType = (map as any).mapType ?? "private";
+      if (currentType === "system" && !isSuperuser) {
+        throw new Error("Only superusers can change the type of system maps");
       }
     }
 
@@ -272,13 +411,13 @@ export const updateMetadata = mutation({
     if (updates.ambientSoundUrl !== undefined) patch.ambientSoundUrl = updates.ambientSoundUrl;
     if (updates.combatEnabled !== undefined) patch.combatEnabled = updates.combatEnabled;
     if (updates.status !== undefined) patch.status = updates.status;
-    if (updates.isHub !== undefined) patch.isHub = updates.isHub;
+    if (updates.mapType !== undefined) patch.mapType = updates.mapType;
 
     await ctx.db.patch(map._id, patch);
   },
 });
 
-/** Add/remove an editor for a map. Requires map creator or global admin. */
+/** Add/remove an editor for a map. Requires map creator (by user) or superuser. */
 export const setEditors = mutation({
   args: {
     profileId: v.id("profiles"),
@@ -286,7 +425,6 @@ export const setEditors = mutation({
     editors: v.array(v.id("profiles")),
   },
   handler: async (ctx, { profileId, name, editors }) => {
-    // Only creator or global admin can change editors
     const profile = await ctx.db.get(profileId);
     if (!profile) throw new Error("Profile not found");
 
@@ -296,30 +434,39 @@ export const setEditors = mutation({
       .first();
     if (!map) throw new Error(`Map "${name}" not found`);
 
-    const isGlobalAdmin = (profile as any).role === "admin";
-    const isCreator = (map as any).creatorProfileId === profileId;
-    if (!isGlobalAdmin && !isCreator) {
-      throw new Error("Only the map creator or a global admin can change editors");
+    const isSuperuser = (profile as any).role === "superuser";
+    const isCreatorByUser = map.createdBy && profile.userId && map.createdBy === profile.userId;
+    const isCreatorByProfile = (map as any).creatorProfileId === profileId;
+    if (!isSuperuser && !isCreatorByUser && !isCreatorByProfile) {
+      throw new Error("Only the map creator or a superuser can change editors");
     }
 
     await ctx.db.patch(map._id, { editors, updatedAt: Date.now() } as any);
   },
 });
 
-/** Delete a map and all its objects. Requires global admin. */
+/** Delete a map and all its objects. Requires superuser or map creator. */
 export const remove = mutation({
   args: {
     profileId: v.id("profiles"),
     name: v.string(),
   },
   handler: async (ctx, { profileId, name }) => {
-    await requireAdmin(ctx, profileId);
+    const profile = await ctx.db.get(profileId);
+    if (!profile) throw new Error("Profile not found");
 
     const map = await ctx.db
       .query("maps")
       .withIndex("by_name", (q) => q.eq("name", name))
       .first();
     if (!map) throw new Error(`Map "${name}" not found`);
+
+    const isSuperuser = (profile as any).role === "superuser";
+    const isCreatorByUser = map.createdBy && profile.userId && map.createdBy === profile.userId;
+    const isCreatorByProfile = (map as any).creatorProfileId === profileId;
+    if (!isSuperuser && !isCreatorByUser && !isCreatorByProfile) {
+      throw new Error("Only the map creator or a superuser can delete maps");
+    }
 
     // Delete map objects
     const objs = await ctx.db
@@ -334,6 +481,20 @@ export const remove = mutation({
       .withIndex("by_map", (q) => q.eq("mapName", name))
       .collect();
     for (const n of npcs) await ctx.db.delete(n._id);
+
+    // Delete world items on this map
+    const worldItems = await ctx.db
+      .query("worldItems")
+      .withIndex("by_map", (q) => q.eq("mapName", name))
+      .collect();
+    for (const wi of worldItems) await ctx.db.delete(wi._id);
+
+    // Delete chat messages scoped to this map
+    const messages = await ctx.db
+      .query("messages")
+      .withIndex("by_map_time", (q) => q.eq("mapName", name))
+      .collect();
+    for (const m of messages) await ctx.db.delete(m._id);
 
     await ctx.db.delete(map._id);
   },

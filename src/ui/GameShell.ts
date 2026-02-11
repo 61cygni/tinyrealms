@@ -64,7 +64,7 @@ export class GameShell {
   private buildUI() {
     const game = this.game!;
 
-    const isAdmin = this.profile.role === "admin";
+    const isAdmin = this.profile.role === "superuser";
 
     // Map browser overlay
     this.mapBrowser = new MapBrowser({
@@ -148,6 +148,7 @@ export class GameShell {
     this.mode = newMode;
     this.game?.setMode(newMode);
     this.hud?.setMode(newMode);
+    this.game?.worldItemLayer.setBuildMode(newMode === "build");
     this.syncVisibility();
   }
 

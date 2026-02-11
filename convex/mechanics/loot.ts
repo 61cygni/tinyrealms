@@ -5,7 +5,7 @@ import { mutation } from "../_generated/server";
 // Loot tables are defined as part of combatEncounters.rewards
 
 export interface LootTableEntry {
-  itemDefId: string;
+  itemDefName: string;
   weight: number; // relative probability
   minQuantity: number;
   maxQuantity: number;
@@ -29,7 +29,7 @@ export const resolveLoot = mutation({
       0
     );
 
-    const drops: { itemDefId: string; quantity: number }[] = [];
+    const drops: { itemDefName: string; quantity: number }[] = [];
 
     for (const entry of lootTable) {
       const roll = Math.random() * totalWeight;
@@ -37,7 +37,7 @@ export const resolveLoot = mutation({
         const quantity =
           entry.minQuantity +
           Math.floor(Math.random() * (entry.maxQuantity - entry.minQuantity + 1));
-        drops.push({ itemDefId: entry.itemDefId, quantity });
+        drops.push({ itemDefName: entry.itemDefName, quantity });
       }
     }
 
@@ -51,18 +51,18 @@ export const resolveLoot = mutation({
       if (!inv) {
         await ctx.db.insert("inventories", {
           playerId,
-          slots: [{ itemDefId: drop.itemDefId, quantity: drop.quantity, metadata: {} }],
+          slots: [{ itemDefName: drop.itemDefName, quantity: drop.quantity, metadata: {} }],
         });
       } else {
         const slots = [...(inv.slots as any[])];
         const existing = slots.findIndex(
-          (s: any) => s.itemDefId === drop.itemDefId
+          (s: any) => s.itemDefName === drop.itemDefName
         );
         if (existing >= 0) {
           slots[existing].quantity += drop.quantity;
         } else {
           slots.push({
-            itemDefId: drop.itemDefId,
+            itemDefName: drop.itemDefName,
             quantity: drop.quantity,
             metadata: {},
           });

@@ -36,8 +36,6 @@ export class CharacterPanel {
   private npcList!: HTMLElement;
   private mapInfo!: HTMLElement;
   private saveBtn!: HTMLButtonElement;
-  private addItemRow!: HTMLElement;
-
   // Editing state (admin)
   private editedStats: ProfileData["stats"] | null = null;
 
@@ -74,14 +72,14 @@ export class CharacterPanel {
   setGame(game: Game) {
     this.game = game;
     this.profile = game.profile;
-    this.isAdmin = game.profile.role === "admin";
+    this.isAdmin = game.profile.role === "superuser";
     if (this.isOpen) this.refresh();
   }
 
   /** Update the profile reference (e.g. after stats change) */
   updateProfile(profile: ProfileData) {
     this.profile = profile;
-    this.isAdmin = profile.role === "admin";
+    this.isAdmin = profile.role === "superuser";
     if (this.isOpen) this.refresh();
   }
 
@@ -169,10 +167,7 @@ export class CharacterPanel {
     itemsTitle.textContent = "Items";
     this.itemsGrid = document.createElement("div");
     this.itemsGrid.className = "char-items-grid";
-    this.addItemRow = document.createElement("div");
-    this.addItemRow.className = "char-add-item-row";
-    this.addItemRow.style.display = "none";
-    itemsSection.append(itemsTitle, this.itemsGrid, this.addItemRow);
+    itemsSection.append(itemsTitle, this.itemsGrid);
 
     // NPCs chatted
     const npcSection = document.createElement("div");
@@ -246,17 +241,15 @@ export class CharacterPanel {
     // ---- Items ----
     this.renderItems(p.items);
 
-    // ---- Add item row (admin) ----
-    this.renderAddItemRow();
-
     // ---- NPCs ----
     this.renderNpcs(p.npcsChatted);
 
     // ---- Map info ----
     this.mapInfo.innerHTML = "";
-    if (p.mapName) {
+    const currentMap = this.game?.currentMapName ?? p.mapName;
+    if (currentMap) {
       this.mapInfo.innerHTML =
-        `Current map: <span class="char-map-name">${p.mapName}</span>`;
+        `Current map: <span class="char-map-name">${currentMap}</span>`;
     }
 
     // ---- Sprite ----
@@ -388,43 +381,6 @@ export class CharacterPanel {
     }
   }
 
-  private renderAddItemRow() {
-    this.addItemRow.innerHTML = "";
-    if (!this.isAdmin) {
-      this.addItemRow.style.display = "none";
-      return;
-    }
-    this.addItemRow.style.display = "";
-
-    const nameInput = document.createElement("input");
-    nameInput.className = "char-add-item-input";
-    nameInput.placeholder = "Item name\u2026";
-
-    const qtyInput = document.createElement("input");
-    qtyInput.className = "char-add-item-qty";
-    qtyInput.type = "number";
-    qtyInput.value = "1";
-    qtyInput.min = "1";
-
-    const addBtn = document.createElement("button");
-    addBtn.className = "char-add-item-btn";
-    addBtn.textContent = "+ Add";
-    addBtn.addEventListener("click", async () => {
-      const name = nameInput.value.trim();
-      const qty = parseInt(qtyInput.value) || 1;
-      if (!name) return;
-      await this.addItem(name, qty);
-      nameInput.value = "";
-      qtyInput.value = "1";
-    });
-
-    // Allow pressing Enter in the item name input
-    nameInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") addBtn.click();
-    });
-
-    this.addItemRow.append(nameInput, qtyInput, addBtn);
-  }
 
   /* ------------------------------------------------------------------ */
   /*  NPCs list                                                          */
@@ -561,29 +517,6 @@ export class CharacterPanel {
       console.error("Failed to save stats:", err);
       this.saveBtn.textContent = "Error";
       this.saveBtn.disabled = false;
-    }
-  }
-
-  private async addItem(name: string, quantity: number) {
-    if (!this.profile) return;
-    const convex = getConvexClient();
-    try {
-      await convex.mutation(api.profiles.addItem, {
-        id: this.profile._id as Id<"profiles">,
-        itemName: name,
-        quantity,
-      });
-      // Update local
-      const existing = this.profile.items.find((i) => i.name === name);
-      if (existing) {
-        existing.quantity += quantity;
-      } else {
-        this.profile.items.push({ name, quantity });
-      }
-      if (this.game) this.game.profile.items = [...this.profile.items];
-      this.renderItems(this.profile.items);
-    } catch (err) {
-      console.error("Failed to add item:", err);
     }
   }
 

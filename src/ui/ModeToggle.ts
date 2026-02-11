@@ -51,12 +51,12 @@ export class ModeToggle {
       this.buttons.push(btn);
     }
 
-    // Portal / Maps button (admin-only — quick travel for testing)
-    if (opts.isAdmin && opts.onOpenMaps) {
+    // Maps button (available to all players)
+    if (opts.onOpenMaps) {
       const onMaps = opts.onOpenMaps;
       const mapsBtn = document.createElement("button");
       mapsBtn.className = "mode-toggle-btn maps-btn portal-btn";
-      mapsBtn.title = "Portal — travel to any map (admin)";
+      mapsBtn.title = "Maps";
       mapsBtn.textContent = "\uD83C\uDF0D"; // 🌍
       mapsBtn.addEventListener("click", () => onMaps());
       btnGroup.appendChild(mapsBtn);
@@ -78,8 +78,8 @@ export class ModeToggle {
 
     const signOut = document.createElement("button");
     signOut.className = "mode-toggle-btn signout-btn";
-    signOut.title = "Sign Out";
-    signOut.textContent = "\u23FB"; // ⏻
+    signOut.title = "Back to Character Select";
+    signOut.textContent = "🏠"; // 🏠
     signOut.addEventListener("click", () => window.location.reload());
 
     this.el.append(btnGroup, signOut);

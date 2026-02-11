@@ -92,7 +92,7 @@ Drop an MP3 or M4A file into `public/assets/audio/` and register it in both:
    - **Tileset** — optional; can be picked or changed later in the editor
    - **Background Music** — optional
    - **Combat Enabled** — whether PvE encounters trigger on this map
-   - **Is Hub** — marks this as a default spawn map
+   - **Combat Enabled** and other metadata
 4. Click **Create**.
 
 The Convex mutation `maps.create` builds 5 empty layers, a collision mask, and a default `start1` spawn label at the map center.

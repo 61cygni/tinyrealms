@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 /** Send a chat message */
 export const send = mutation({
@@ -15,10 +16,16 @@ export const send = mutation({
     ),
   },
   handler: async (ctx, args) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    const profile = await ctx.db.get(args.profileId);
+    if (!profile) throw new Error("Profile not found");
+    if (profile.userId !== userId) throw new Error("Cannot send chat as another profile");
+
     return await ctx.db.insert("messages", {
       mapName: args.mapName,
       profileId: args.profileId,
-      senderName: args.senderName,
+      senderName: profile.name,
       text: args.text,
       type: args.type,
       timestamp: Date.now(),

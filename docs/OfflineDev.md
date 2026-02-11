@@ -302,6 +302,80 @@ The local database persists in `~/.convex/convex-backend-state/local-martin_casa
 
 To re-seed static maps manually, just load the game — `Game.ts` calls `seedStaticMaps()` on init.
 
+### Database is very large / backend slow to start
+
+The local SQLite database grows with every Convex mutation. High-frequency writes (presence updates, NPC ticks) can cause it to balloon to multiple GB over days of development, making the backend slow to start or even timeout.
+
+**Check the current size:**
+
+```bash
+npm run db:check
+```
+
+**Compact without losing data** (stop the backend first):
+
+```bash
+npm run db:compact
+```
+
+This runs SQLite `VACUUM` to reclaim unused space. Expect 30-70% size reduction depending on fragmentation.
+
+**Full reset** (if compacting isn't enough):
+
+```bash
+# Stop the backend first (Ctrl+C on npx convex dev)
+rm ~/.convex/convex-backend-state/local-martin_casado-here/convex_local_backend.sqlite3
+npx convex dev
+```
+
+After a reset you'll need to:
+1. Re-set environment variables (see [Environment Variables After Reset](#environment-variables-after-reset) below)
+2. Re-create user accounts and characters
+3. Maps will auto-seed from static JSON on first game load
+
+**What drives database growth?**
+
+| Source | Interval | Mutations/hour (1 client) |
+|--------|----------|---------------------------|
+| Presence updates | 1000ms (delta-only — skips if player hasn't moved) | ~1,000–3,600 |
+| NPC tick loop | 1500ms (skips idle NPCs) | ~2,400 |
+| Profile position save | 30s | ~120 |
+
+**Recommended cadence:** Run `npm run db:check` weekly. Compact when the database exceeds ~500 MB.
+
+### Environment variables after reset
+
+After deleting and recreating the SQLite database, all Convex environment variables are lost. You must re-set them:
+
+```bash
+# 1. Generate new JWT keys (or reuse existing ones if you saved them)
+#    Quick generation with Node.js:
+node -e "
+const { generateKeyPairSync, createPublicKey } = require('crypto');
+const { privateKey } = generateKeyPairSync('rsa', {
+  modulusLength: 2048,
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+});
+const jwk = createPublicKey(privateKey).export({ format: 'jwk' });
+jwk.kid = 'convex-auth-key'; jwk.use = 'sig'; jwk.alg = 'RS256';
+console.log('Private key and JWKS generated. Set them with npx convex env set.');
+console.log('JWT_PRIVATE_KEY length:', privateKey.length);
+console.log('JWKS:', JSON.stringify({ keys: [jwk] }));
+"
+
+# 2. Set the keys
+npx convex env set JWT_PRIVATE_KEY -- '<paste the PEM private key>'
+npx convex env set JWKS '<paste the JWKS JSON>'
+
+# 3. Set the admin API key (must match your shell's ADMIN_API_KEY)
+npx convex env set ADMIN_API_KEY "your-admin-key"
+
+# 4. (Production only) GitHub OAuth credentials
+npx convex env set AUTH_GITHUB_ID "your-github-client-id"
+npx convex env set AUTH_GITHUB_SECRET "your-github-client-secret"
+```
+
 ---
 
 ## Architecture Recap

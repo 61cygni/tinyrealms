@@ -67,6 +67,7 @@ interface ItemDef {
   isUnique?: boolean;
   tags?: string[];
   lore?: string;
+  pickupSoundUrl?: string;
 }
 
 // Tileset info — shared with MapEditorPanel
@@ -113,6 +114,14 @@ const TYPE_ICONS: Record<string, string> = {
   misc: "\uD83D\uDCE6",        // 📦
 };
 
+const ITEM_PICKUP_SOUND_OPTIONS = [
+  "",
+  "/assets/audio/take-item.mp3",
+  "/assets/audio/book.mp3",
+  "/assets/audio/door-open.mp3",
+  "/assets/audio/lighting-a-fire.mp3",
+];
+
 // ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
@@ -147,6 +156,7 @@ export class ItemEditorPanel {
   private typeSelect!: HTMLSelectElement;
   private raritySelect!: HTMLSelectElement;
   private iconUrlInput!: HTMLInputElement;
+  private pickupSoundUrlInput!: HTMLInputElement;
   private equipSlotSelect!: HTMLSelectElement;
   private levelReqInput!: HTMLInputElement;
   private stackableCheck!: HTMLInputElement;
@@ -320,6 +330,16 @@ export class ItemEditorPanel {
     this.nameInput = this.addTextField(identitySec, "Name (unique slug)", "e.g. iron-sword");
     this.displayNameInput = this.addTextField(identitySec, "Display Name", "e.g. Iron Sword");
     this.iconUrlInput = this.addTextField(identitySec, "Icon URL (or pick from tileset below)", "/assets/icons/iron-sword.png");
+    this.pickupSoundUrlInput = this.addTextField(identitySec, "Pickup SFX URL", "/assets/audio/take-item.mp3");
+    this.pickupSoundUrlInput.setAttribute("list", "item-pickup-sfx-options");
+    const pickupSfxList = document.createElement("datalist");
+    pickupSfxList.id = "item-pickup-sfx-options";
+    for (const url of ITEM_PICKUP_SOUND_OPTIONS) {
+      const opt = document.createElement("option");
+      opt.value = url;
+      pickupSfxList.appendChild(opt);
+    }
+    identitySec.appendChild(pickupSfxList);
 
     const typeRow = document.createElement("div");
     typeRow.className = "item-editor-field-row";
@@ -1109,6 +1129,7 @@ export class ItemEditorPanel {
     this.typeSelect.value = item.type;
     this.raritySelect.value = item.rarity;
     this.iconUrlInput.value = item.iconUrl ?? "";
+    this.pickupSoundUrlInput.value = item.pickupSoundUrl ?? "";
     this.equipSlotSelect.value = item.equipSlot ?? "";
     this.levelReqInput.value = String(item.levelRequirement ?? 0);
     this.stackableCheck.checked = item.stackable;
@@ -1147,6 +1168,7 @@ export class ItemEditorPanel {
     item.type = this.typeSelect.value as ItemType;
     item.rarity = this.raritySelect.value as Rarity;
     item.iconUrl = this.iconUrlInput.value.trim() || undefined;
+    item.pickupSoundUrl = this.pickupSoundUrlInput.value.trim() || undefined;
     // iconTileset fields are set directly by the tile picker click handler
     item.equipSlot = this.equipSlotSelect.value || undefined;
     item.levelRequirement = parseInt(this.levelReqInput.value) || undefined;
@@ -1212,6 +1234,7 @@ export class ItemEditorPanel {
         isUnique: item.isUnique,
         tags: item.tags?.length ? item.tags : undefined,
         lore: item.lore,
+        pickupSoundUrl: item.pickupSoundUrl,
       });
 
       this.statusEl.textContent = "Saved!";

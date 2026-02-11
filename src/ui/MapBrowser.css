@@ -63,6 +63,25 @@
   gap: 10px;
 }
 
+.map-visibility-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+
+.map-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted, #b2bec3);
+}
+
 .map-card {
   display: flex;
   align-items: center;
@@ -125,7 +144,9 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
-.map-badge.hub   { background: #6c5ce7; color: #fff; }
+.map-badge.system { background: #6c5ce7; color: #fff; }
+.map-badge.public { background: #2ecc71; color: #0f2a18; }
+.map-badge.private { background: #2f3640; color: #dfe6e9; }
 .map-badge.draft { background: #555; color: #ccc; }
 .map-badge.combat { background: #e74c3c; color: #fff; }
 

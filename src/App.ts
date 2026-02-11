@@ -1,9 +1,9 @@
 /**
  * Root application controller.
- * Shows a profile selection screen on startup, then launches the game
- * with the chosen profile. No real auth — profiles are stored in Convex.
+ * Flow: AuthScreen → ProfileScreen → Game
  */
 import type { ConvexClient } from "convex/browser";
+import { AuthScreen } from "./ui/AuthScreen.ts";
 import { ProfileScreen } from "./ui/ProfileScreen.ts";
 import { GameShell } from "./ui/GameShell.ts";
 import { SplashHost } from "./splash/SplashHost.ts";
@@ -12,6 +12,7 @@ import type { ProfileData } from "./engine/types.ts";
 export class App {
   private root: HTMLElement;
   private convex: ConvexClient;
+  private authScreen: AuthScreen | null = null;
   private profileScreen: ProfileScreen | null = null;
   private gameShell: GameShell | null = null;
   private splashHost: SplashHost | null = null;
@@ -22,7 +23,19 @@ export class App {
   }
 
   start() {
-    this.showProfileScreen();
+    this.showAuthScreen();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auth
+  // ---------------------------------------------------------------------------
+
+  private showAuthScreen() {
+    this.clear();
+    this.authScreen = new AuthScreen(() => {
+      this.showProfileScreen();
+    });
+    this.root.appendChild(this.authScreen.el);
   }
 
   // ---------------------------------------------------------------------------
@@ -31,9 +44,10 @@ export class App {
 
   private showProfileScreen() {
     this.clear();
-    this.profileScreen = new ProfileScreen((profile) => {
-      this.showGame(profile);
-    });
+    this.profileScreen = new ProfileScreen(
+      (profile) => this.showGame(profile),
+      () => this.showAuthScreen(),  // sign-out callback
+    );
     this.root.appendChild(this.profileScreen.el);
   }
 
@@ -55,6 +69,10 @@ export class App {
   // ---------------------------------------------------------------------------
 
   private clear() {
+    if (this.authScreen) {
+      this.authScreen.destroy();
+      this.authScreen = null;
+    }
     if (this.profileScreen) {
       this.profileScreen.destroy();
       this.profileScreen = null;

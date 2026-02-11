@@ -9,6 +9,7 @@ export default defineSchema({
   // Maps & tilesets
   // ---------------------------------------------------------------------------
   maps: defineTable({
+    schemaVersion: v.optional(v.number()),   // migration version tracker
     name: v.string(),
     width: v.number(), // in tiles
     height: v.number(), // in tiles
@@ -67,10 +68,10 @@ export default defineSchema({
     ambientSoundUrl: v.optional(v.string()), // ambient sound loop (rain, wind)
     combatEnabled: v.optional(v.boolean()),  // is combat allowed on this map?
     status: v.optional(v.string()),          // "draft" | "published" (default "published")
-    isHub: v.optional(v.boolean()),          // default spawn map for new players
+    mapType: v.optional(v.string()),         // "public" | "private" | "system" (default "private")
     editors: v.optional(v.array(v.id("profiles"))), // per-map editor list
     creatorProfileId: v.optional(v.id("profiles")),
-    createdBy: v.optional(v.id("users")),    // legacy
+    createdBy: v.optional(v.id("users")),    // user who created this map (for ownership checks)
     updatedAt: v.number(),
   }).index("by_name", ["name"]),
 
@@ -82,8 +83,18 @@ export default defineSchema({
     imageId: v.id("_storage"),
     frameWidth: v.number(),
     frameHeight: v.number(),
-    frames: v.any(), // frame definitions (PixiJS spritesheet format)
-    animations: v.any(), // animation definitions { rowName: [frameNames] }
+    // PixiJS spritesheet format — keys are frame names, values are frame rects.
+    // Dynamic key-value maps, so we use v.record() rather than v.any().
+    frames: v.record(v.string(), v.object({
+      frame: v.object({ x: v.number(), y: v.number(), w: v.number(), h: v.number() }),
+      rotated: v.optional(v.boolean()),
+      trimmed: v.optional(v.boolean()),
+      spriteSourceSize: v.optional(v.object({
+        x: v.number(), y: v.number(), w: v.number(), h: v.number(),
+      })),
+      sourceSize: v.optional(v.object({ w: v.number(), h: v.number() })),
+    })),
+    animations: v.record(v.string(), v.array(v.string())), // { rowName: [frameNames] }
     createdBy: v.id("users"),
   }).index("by_name", ["name"]),
 
@@ -99,7 +110,7 @@ export default defineSchema({
     anchorY: v.number(),              // 0–1, default 1.0 (bottom-center)
     scale: v.number(),                // rendering scale multiplier
     isCollidable: v.boolean(),        // should block player movement?
-    category: v.string(),             // "object" | "decoration" | "effect" | "npc"
+    category: v.string(),             // "object" | "npc"
     frameWidth: v.number(),           // px
     frameHeight: v.number(),          // px
     // NPC-specific fields (only used when category === "npc")
@@ -120,6 +131,14 @@ export default defineSchema({
     onAnimation: v.optional(v.string()),         // animation to play when "on" (defaults to defaultAnimation)
     offAnimation: v.optional(v.string()),        // animation to play when "off" (static first frame)
     onSoundUrl: v.optional(v.string()),          // ambient sound when "on" (overrides ambientSoundUrl)
+    // Door (4-state: closed → opening → open → closing → closed)
+    isDoor: v.optional(v.boolean()),             // if true, this sprite acts as a door
+    doorClosedAnimation: v.optional(v.string()), // idle animation when closed
+    doorOpeningAnimation: v.optional(v.string()), // transition: closed → open (plays once)
+    doorOpenAnimation: v.optional(v.string()),   // idle animation when open
+    doorClosingAnimation: v.optional(v.string()), // transition: open → closed (plays once)
+    doorOpenSoundUrl: v.optional(v.string()),    // one-shot sound when door opens
+    doorCloseSoundUrl: v.optional(v.string()),   // one-shot sound when door closes
     updatedAt: v.number(),
   }).index("by_name", ["name"]),
 
@@ -183,13 +202,15 @@ export default defineSchema({
     .index("by_map_sprite", ["mapName", "spriteDefName"]),
 
   // ---------------------------------------------------------------------------
-  // Profiles (offline auth — no real auth dependency)
+  // Profiles (auth-linked player characters)
   // ---------------------------------------------------------------------------
   profiles: defineTable({
+    schemaVersion: v.optional(v.number()),     // migration version tracker
+    userId: v.optional(v.id("users")),         // owning user (optional during migration)
     name: v.string(),                          // display name
     spriteUrl: v.string(),                     // path to sprite sheet JSON
     color: v.string(),                         // fallback colour hex e.g. "#6c5ce7"
-    role: v.optional(v.string()),               // "admin" | "player" (optional for migration)
+    role: v.optional(v.string()),               // "superuser" | "player"
     stats: v.object({
       hp: v.number(),
       maxHp: v.number(),
@@ -205,13 +226,14 @@ export default defineSchema({
     })),
     npcsChatted: v.array(v.string()),          // names of NPCs spoken to
     mapName: v.optional(v.string()),           // last map the player was on
+    startLabel: v.optional(v.string()),        // preferred spawn label for initial entry
     x: v.optional(v.float64()),               // last known X
     y: v.optional(v.float64()),               // last known Y
     direction: v.optional(v.string()),        // last facing direction
     createdAt: v.number(),
-    inUse: v.optional(v.boolean()),           // true while someone is playing as this profile
-    inUseSince: v.optional(v.number()),       // timestamp when claimed (for stale detection)
-  }).index("by_name", ["name"]),
+  })
+    .index("by_name", ["name"])
+    .index("by_user", ["userId"]),
 
   // ---------------------------------------------------------------------------
   // Players (auth-linked – kept for future real auth)
@@ -225,7 +247,15 @@ export default defineSchema({
     direction: v.string(),
     spriteSheetId: v.optional(v.id("spriteSheets")),
     animation: v.string(),
-    stats: v.any(), // { hp, maxHp, atk, def, spd, level, xp, ... }
+    stats: v.object({
+      hp: v.number(),
+      maxHp: v.number(),
+      atk: v.number(),
+      def: v.number(),
+      spd: v.number(),
+      level: v.number(),
+      xp: v.number(),
+    }),
   })
     .index("by_user", ["userId"])
     .index("by_map", ["mapId"]),
@@ -310,9 +340,19 @@ export default defineSchema({
   quests: defineTable({
     name: v.string(),
     description: v.string(),
-    steps: v.any(), // ordered array of quest step objects
+    steps: v.array(v.object({
+      description: v.string(),
+      type: v.optional(v.string()),    // "kill" | "collect" | "talk" | "reach" | etc.
+      target: v.optional(v.string()),  // NPC name, item name, label name
+      count: v.optional(v.number()),   // required amount
+      optional: v.optional(v.boolean()),
+    })),
     prerequisites: v.array(v.id("quests")),
-    rewards: v.any(), // { items: [], xp: number, currency: {} }
+    rewards: v.object({
+      items: v.optional(v.array(v.object({ name: v.string(), quantity: v.number() }))),
+      xp: v.optional(v.number()),
+      currency: v.optional(v.record(v.string(), v.number())),
+    }),
   }).index("by_name", ["name"]),
 
   questProgress: defineTable({
@@ -324,7 +364,7 @@ export default defineSchema({
       v.literal("completed"),
       v.literal("failed")
     ),
-    choices: v.any(), // record of branch decisions
+    choices: v.record(v.string(), v.string()), // step key -> chosen branch
   })
     .index("by_player", ["playerId"])
     .index("by_player_quest", ["playerId", "questId"]),
@@ -332,8 +372,23 @@ export default defineSchema({
   dialogueTrees: defineTable({
     npcId: v.optional(v.id("npcs")),
     triggerId: v.optional(v.string()),
-    nodes: v.any(), // array of dialogue nodes
-    metadata: v.any(),
+    nodes: v.array(v.object({
+      id: v.string(),
+      text: v.string(),
+      speaker: v.optional(v.string()),
+      choices: v.optional(v.array(v.object({
+        text: v.string(),
+        nextNodeId: v.optional(v.string()),
+        condition: v.optional(v.string()),
+      }))),
+      nextNodeId: v.optional(v.string()),
+      action: v.optional(v.string()),
+    })),
+    metadata: v.optional(v.object({
+      title: v.optional(v.string()),
+      description: v.optional(v.string()),
+      tags: v.optional(v.array(v.string())),
+    })),
   }).index("by_npc", ["npcId"]),
 
   lore: defineTable({
@@ -354,8 +409,16 @@ export default defineSchema({
     mapId: v.optional(v.id("maps")),
     triggerId: v.string(),
     type: v.string(), // "enter-zone" | "interact" | "combat-end" | etc.
-    conditions: v.any(),
-    script: v.any(), // sequence of actions
+    conditions: v.optional(v.object({
+      requiredQuest: v.optional(v.string()),
+      requiredItem: v.optional(v.string()),
+      minLevel: v.optional(v.number()),
+      flag: v.optional(v.string()),
+    })),
+    script: v.array(v.object({
+      action: v.string(),       // "dialogue" | "give-item" | "teleport" | "set-flag" | etc.
+      args: v.optional(v.record(v.string(), v.string())),
+    })),
   }).index("by_map", ["mapId"]),
 
   // ---------------------------------------------------------------------------
@@ -414,6 +477,7 @@ export default defineSchema({
     isUnique: v.optional(v.boolean()),      // true = only one can exist in the game
     tags: v.optional(v.array(v.string())),  // freeform tags (e.g. "fire", "cursed", "two-handed")
     lore: v.optional(v.string()),           // extended lore text
+    pickupSoundUrl: v.optional(v.string()), // one-shot SFX played when picked up
     createdBy: v.optional(v.id("profiles")),
     updatedAt: v.number(),
   }).index("by_name", ["name"]),
@@ -438,12 +502,30 @@ export default defineSchema({
 
   inventories: defineTable({
     playerId: v.id("players"),
-    slots: v.any(), // array of { itemDefId, quantity, metadata }
+    slots: v.array(v.object({
+      itemDefName: v.string(),
+      quantity: v.number(),
+      metadata: v.optional(v.record(v.string(), v.string())),
+    })),
   }).index("by_player", ["playerId"]),
 
   combatEncounters: defineTable({
-    enemies: v.any(), // array of { npcId, level, stats }
-    rewards: v.any(),
+    enemies: v.array(v.object({
+      npcName: v.optional(v.string()),
+      level: v.number(),
+      stats: v.object({
+        hp: v.number(),
+        maxHp: v.number(),
+        atk: v.number(),
+        def: v.number(),
+        spd: v.number(),
+      }),
+    })),
+    rewards: v.object({
+      items: v.optional(v.array(v.object({ name: v.string(), quantity: v.number() }))),
+      xp: v.optional(v.number()),
+      currency: v.optional(v.record(v.string(), v.number())),
+    }),
     mapId: v.optional(v.id("maps")),
     triggerLabel: v.optional(v.string()),
   }).index("by_map", ["mapId"]),
@@ -451,7 +533,13 @@ export default defineSchema({
   combatLog: defineTable({
     encounterId: v.id("combatEncounters"),
     playerId: v.id("players"),
-    turns: v.any(),
+    turns: v.array(v.object({
+      actor: v.string(),         // "player" or NPC name
+      action: v.string(),        // "attack" | "defend" | "skill" | "item" | "flee"
+      target: v.optional(v.string()),
+      damage: v.optional(v.number()),
+      heal: v.optional(v.number()),
+    })),
     outcome: v.union(
       v.literal("victory"),
       v.literal("defeat"),
@@ -462,12 +550,16 @@ export default defineSchema({
 
   wallets: defineTable({
     playerId: v.id("players"),
-    currencies: v.any(), // record of currency-name to amount
+    currencies: v.record(v.string(), v.number()), // currency-name -> amount
   }).index("by_player", ["playerId"]),
 
   shops: defineTable({
     npcId: v.id("npcs"),
-    inventory: v.any(), // array of { itemDefId, price, stock }
+    inventory: v.array(v.object({
+      itemDefName: v.string(),
+      price: v.number(),
+      stock: v.optional(v.number()), // null = unlimited
+    })),
     mapId: v.optional(v.id("maps")),
   }).index("by_npc", ["npcId"]),
 });

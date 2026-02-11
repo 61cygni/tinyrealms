@@ -27,7 +27,7 @@ const SPRITE_SHEETS: SheetEntry[] = [
   { name: "Cozy Fire",     jsonUrl: "/assets/sprites/cozy-fire.json" },
   { name: "Cozy Fireplace",jsonUrl: "/assets/sprites/cozy-fireplace.json" },
   { name: "Cozy Candles",  jsonUrl: "/assets/sprites/cozy-candles.json" },
-  { name: "Cozy Door",     jsonUrl: "/assets/sprites/cozy-door.json" },
+  { name: "Cozy Door",     jsonUrl: "/assets/sprites/cozydoor0.json" },
   { name: "Sleeping Cat",  jsonUrl: "/assets/sprites/sleeping-cat.json" },
   { name: "Sleeping Dog",  jsonUrl: "/assets/sprites/sleeping-dog.json" },
   { name: "Fountain",      jsonUrl: "/assets/sprites/Fountain_32x32.json" },
@@ -35,6 +35,7 @@ const SPRITE_SHEETS: SheetEntry[] = [
   { name: "Grandfather Clock", jsonUrl: "/assets/sprites/cozyclock.json" },
   { name: "Phonograph",    jsonUrl: "/assets/sprites/phono.json" },
   { name: "Music Notes",  jsonUrl: "/assets/sprites/musicnotes.json" },
+  { name: "Soup Pot",     jsonUrl: "/assets/sprites/cozy-souppot.json" },
 ];
 
 /** Raw sprite-sheet JSON shape (TexturePacker / PixiJS format) */
@@ -86,6 +87,14 @@ interface SavedSpriteDef {
   onAnimation?: string;
   offAnimation?: string;
   onSoundUrl?: string;
+  // Door
+  isDoor?: boolean;
+  doorClosedAnimation?: string;
+  doorOpeningAnimation?: string;
+  doorOpenAnimation?: string;
+  doorClosingAnimation?: string;
+  doorOpenSoundUrl?: string;
+  doorCloseSoundUrl?: string;
 }
 
 /** Available sound files for the picker */
@@ -106,9 +115,10 @@ const SOUND_FILES: { label: string; url: string }[] = [
   { label: "Door Close",           url: "/assets/audio/door-close.mp3" },
   { label: "Fire Start",           url: "/assets/audio/lighting-a-fire.mp3" },
   { label: "1920s Jazz",           url: "/assets/audio/1920jazz.mp3" },
+  { label: "Soup Pot",             url: "/assets/audio/souppot.mp3" },
 ];
 
-const CATEGORIES = ["object", "decoration", "effect", "npc"];
+const CATEGORIES = ["object", "npc"];
 
 // ---------------------------------------------------------------------------
 // Editor panel
@@ -158,6 +168,16 @@ export class SpriteEditorPanel {
   private onAnimInput!: HTMLInputElement;
   private offAnimInput!: HTMLInputElement;
   private onSoundSelect!: HTMLSelectElement;
+
+  // Door form fields
+  private doorFieldsWrap!: HTMLElement;
+  private doorCheck!: HTMLInputElement;
+  private doorClosedAnimInput!: HTMLInputElement;
+  private doorOpeningAnimInput!: HTMLInputElement;
+  private doorOpenAnimInput!: HTMLInputElement;
+  private doorClosingAnimInput!: HTMLInputElement;
+  private doorOpenSoundSelect!: HTMLSelectElement;
+  private doorCloseSoundSelect!: HTMLSelectElement;
 
   // NPC-specific form fields
   private npcFieldsWrap!: HTMLElement;
@@ -385,6 +405,63 @@ export class SpriteEditorPanel {
 
     this.toggleableCheck.addEventListener("change", () => {
       toggleAnimWrap.style.display = this.toggleableCheck.checked ? "" : "none";
+      // Uncheck door if toggleable is checked (mutually exclusive)
+      if (this.toggleableCheck.checked && this.doorCheck.checked) {
+        this.doorCheck.checked = false;
+        this.doorCheck.dispatchEvent(new Event("change"));
+      }
+    });
+
+    // ── Door fields ──
+    this.doorFieldsWrap = document.createElement("div");
+    this.doorFieldsWrap.className = "sprite-editor-door-fields-wrap";
+
+    const doorField = document.createElement("div");
+    doorField.className = "sprite-editor-field sprite-editor-field-row";
+    this.doorCheck = document.createElement("input");
+    this.doorCheck.type = "checkbox";
+    this.doorCheck.id = "door-check";
+    const doorLabel = document.createElement("label");
+    doorLabel.htmlFor = "door-check";
+    doorLabel.textContent = "Door (4-state open/close)";
+    doorField.append(this.doorCheck, doorLabel);
+    this.doorFieldsWrap.appendChild(doorField);
+
+    const doorAnimWrap = document.createElement("div");
+    doorAnimWrap.className = "sprite-editor-door-anim-fields";
+    doorAnimWrap.style.display = "none";
+    this.doorClosedAnimInput = this.addFormField(doorAnimWrap, "Closed Animation (row name)", "text", "") as HTMLInputElement;
+    this.doorOpeningAnimInput = this.addFormField(doorAnimWrap, "Opening Animation (row name)", "text", "") as HTMLInputElement;
+    this.doorOpenAnimInput = this.addFormField(doorAnimWrap, "Open Animation (row name)", "text", "") as HTMLInputElement;
+    this.doorClosingAnimInput = this.addFormField(doorAnimWrap, "Closing Animation (row name)", "text", "") as HTMLInputElement;
+
+    // Door sounds
+    const doorOpenSoundField = document.createElement("div");
+    doorOpenSoundField.className = "sprite-editor-field";
+    const doorOpenSoundLabel = document.createElement("label");
+    doorOpenSoundLabel.textContent = "Open Sound";
+    this.doorOpenSoundSelect = this.buildSoundSelect();
+    doorOpenSoundField.append(doorOpenSoundLabel, this.doorOpenSoundSelect);
+    doorAnimWrap.appendChild(doorOpenSoundField);
+
+    const doorCloseSoundField = document.createElement("div");
+    doorCloseSoundField.className = "sprite-editor-field";
+    const doorCloseSoundLabel = document.createElement("label");
+    doorCloseSoundLabel.textContent = "Close Sound";
+    this.doorCloseSoundSelect = this.buildSoundSelect();
+    doorCloseSoundField.append(doorCloseSoundLabel, this.doorCloseSoundSelect);
+    doorAnimWrap.appendChild(doorCloseSoundField);
+
+    this.doorFieldsWrap.appendChild(doorAnimWrap);
+    form.appendChild(this.doorFieldsWrap);
+
+    this.doorCheck.addEventListener("change", () => {
+      doorAnimWrap.style.display = this.doorCheck.checked ? "" : "none";
+      // Uncheck toggleable if door is checked (mutually exclusive)
+      if (this.doorCheck.checked && this.toggleableCheck.checked) {
+        this.toggleableCheck.checked = false;
+        this.toggleableCheck.dispatchEvent(new Event("change"));
+      }
     });
 
     // NPC-specific fields (shown/hidden based on category)
@@ -460,15 +537,20 @@ export class SpriteEditorPanel {
 
     panel.appendChild(form);
 
-    // Saved definitions list
+    // Saved definitions list — placed in a collapsible section at the bottom
+    // but also rendered in a top summary strip so it's always visible.
     const savedLabel = document.createElement("div");
     savedLabel.className = "sprite-editor-section-label";
     savedLabel.textContent = "Saved Sprites";
-    panel.appendChild(savedLabel);
+    savedLabel.style.cursor = "pointer";
+    savedLabel.title = "Click to scroll to saved sprites";
 
     this.savedListEl = document.createElement("div");
     this.savedListEl.className = "sprite-editor-saved-list";
-    panel.appendChild(this.savedListEl);
+
+    // Put saved list BEFORE the form so it's visible without scrolling
+    panel.insertBefore(this.savedListEl, form);
+    panel.insertBefore(savedLabel, this.savedListEl);
 
     return panel;
   }
@@ -700,7 +782,7 @@ export class SpriteEditorPanel {
     this.anchorXInput.value = "0.5";
     this.anchorYInput.value = "1";
     this.collidableCheck.checked = false;
-    this.categorySelect.value = "decoration";
+    this.categorySelect.value = "object";
     this.deleteBtn.style.display = "none";
     this.statusEl.textContent = "";
 
@@ -752,6 +834,17 @@ export class SpriteEditorPanel {
     this.onSoundSelect.value = def.onSoundUrl ?? "";
     (this.toggleFieldsWrap.querySelector(".sprite-editor-toggle-anim-fields") as HTMLElement).style.display =
       def.toggleable ? "" : "none";
+
+    // Door fields
+    this.doorCheck.checked = !!def.isDoor;
+    this.doorClosedAnimInput.value = def.doorClosedAnimation ?? "";
+    this.doorOpeningAnimInput.value = def.doorOpeningAnimation ?? "";
+    this.doorOpenAnimInput.value = def.doorOpenAnimation ?? "";
+    this.doorClosingAnimInput.value = def.doorClosingAnimation ?? "";
+    this.doorOpenSoundSelect.value = def.doorOpenSoundUrl ?? "";
+    this.doorCloseSoundSelect.value = def.doorCloseSoundUrl ?? "";
+    (this.doorFieldsWrap.querySelector(".sprite-editor-door-anim-fields") as HTMLElement).style.display =
+      def.isDoor ? "" : "none";
 
     // NPC fields
     const isNpc = def.category === "npc";
@@ -829,6 +922,24 @@ export class SpriteEditorPanel {
           offAnimation: undefined,
           onSoundUrl: undefined,
         }),
+        // Door
+        ...(this.doorCheck.checked ? {
+          isDoor: true,
+          doorClosedAnimation: this.doorClosedAnimInput.value || undefined,
+          doorOpeningAnimation: this.doorOpeningAnimInput.value || undefined,
+          doorOpenAnimation: this.doorOpenAnimInput.value || undefined,
+          doorClosingAnimation: this.doorClosingAnimInput.value || undefined,
+          doorOpenSoundUrl: this.doorOpenSoundSelect.value || undefined,
+          doorCloseSoundUrl: this.doorCloseSoundSelect.value || undefined,
+        } : {
+          isDoor: undefined,
+          doorClosedAnimation: undefined,
+          doorOpeningAnimation: undefined,
+          doorOpenAnimation: undefined,
+          doorClosingAnimation: undefined,
+          doorOpenSoundUrl: undefined,
+          doorCloseSoundUrl: undefined,
+        }),
         // NPC-specific
         ...(isNpc ? {
           npcSpeed: parseFloat(this.npcSpeedInput.value) || 30,
@@ -849,6 +960,7 @@ export class SpriteEditorPanel {
         ambientSoundRadius: this.ambientSoundSelect.value ? (parseFloat(this.ambientRadiusInput.value) || 200) : undefined,
         ambientSoundVolume: this.ambientSoundSelect.value ? (parseFloat(this.ambientVolumeInput.value) || 0.5) : undefined,
         interactSoundUrl: this.interactSoundSelect.value || undefined,
+        onSoundUrl: (this.toggleableCheck.checked ? this.onSoundSelect.value : "") || undefined,
       };
       if (this.game?.entityLayer) {
         this.game.entityLayer.refreshNPCSounds(name, soundCfg);
@@ -858,9 +970,14 @@ export class SpriteEditorPanel {
       }
 
       this.loadSavedDefs();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to save sprite definition:", err);
-      this.showStatus("Save failed!", true);
+      const msg = err?.message || "Save failed!";
+      if (msg.includes("superuser")) {
+        this.showStatus("Save failed: superuser role required", true);
+      } else {
+        this.showStatus(`Save failed: ${msg}`, true);
+      }
     }
   }
 
@@ -900,13 +1017,27 @@ export class SpriteEditorPanel {
   // =========================================================================
 
   async loadSavedDefs() {
+    // Show loading state immediately
+    this.savedListEl.innerHTML = "";
+    const loading = document.createElement("div");
+    loading.className = "sprite-editor-empty";
+    loading.textContent = "Loading saved sprites...";
+    this.savedListEl.appendChild(loading);
+
     try {
       const convex = getConvexClient();
       const defs = await convex.query(api.spriteDefinitions.list, {});
+      console.log(`[SpriteEditor] Loaded ${defs.length} saved sprite definitions`);
       this.savedDefs = defs as unknown as SavedSpriteDef[];
       this.renderSavedList();
     } catch (err) {
       console.warn("Failed to load sprite definitions:", err);
+      this.savedListEl.innerHTML = "";
+      const errEl = document.createElement("div");
+      errEl.className = "sprite-editor-empty";
+      errEl.textContent = "Failed to load saved sprites";
+      errEl.style.color = "var(--danger, #e74c3c)";
+      this.savedListEl.appendChild(errEl);
     }
   }
 

@@ -31,6 +31,9 @@ export class ChatPanel {
   private messages: ChatMessage[] = [];
   private unreadCount = 0;
   private badgeEl: HTMLElement;
+  private joinedAt = Date.now();
+  private didHydrate = false;
+  private seenMessageIds = new Set<string>();
 
   constructor() {
     this.el = document.createElement("div");
@@ -112,8 +115,18 @@ export class ChatPanel {
 
   /** Called by GameShell after the game initializes */
   setContext(profile: ProfileData, mapName: string) {
+    const isSameProfile = this.profile?._id === profile._id;
     this.profile = profile;
     this.mapName = mapName;
+    // World chat is global per world (not map-scoped).
+    // Avoid resetting unread state on map changes for the same profile.
+    if (isSameProfile && this.unsub) return;
+
+    this.joinedAt = Date.now();
+    this.didHydrate = false;
+    this.seenMessageIds.clear();
+    this.unreadCount = 0;
+    this.updateBadge();
     this.subscribe();
   }
 
@@ -124,15 +137,34 @@ export class ChatPanel {
     const convex = getConvexClient();
     this.unsub = convex.onUpdate(
       api.chat.listRecent,
-      { mapName: this.mapName ?? undefined, limit: 50 },
+      { mapName: undefined, limit: 50 },
       (msgs) => {
-        const hadMessages = this.messages.length;
-        this.messages = msgs as unknown as ChatMessage[];
-        this.renderMessages();
+        const next = msgs as unknown as ChatMessage[];
 
-        // Count new messages if panel is closed
-        if (!this.isOpen && this.messages.length > hadMessages) {
-          this.unreadCount += this.messages.length - hadMessages;
+        // Initial hydration should never count as "new messages".
+        if (!this.didHydrate) {
+          this.messages = next;
+          this.renderMessages();
+          for (const m of next) this.seenMessageIds.add(String(m._id));
+          this.didHydrate = true;
+          return;
+        }
+
+        let newUnread = 0;
+        for (const m of next) {
+          const id = String(m._id);
+          const isNewForClient = !this.seenMessageIds.has(id);
+          if (isNewForClient && m.timestamp > this.joinedAt && !this.isOpen) {
+            newUnread += 1;
+          }
+        }
+
+        this.messages = next;
+        this.renderMessages();
+        for (const m of next) this.seenMessageIds.add(String(m._id));
+
+        if (newUnread > 0) {
+          this.unreadCount += newUnread;
           this.updateBadge();
         }
       },
@@ -152,7 +184,8 @@ export class ChatPanel {
     try {
       const convex = getConvexClient();
       await convex.mutation(api.chat.send, {
-        mapName: this.mapName ?? undefined,
+        // World-level chat channel (shared across maps in this world)
+        mapName: undefined,
         profileId: this.profile._id as Id<"profiles">,
         senderName: this.profile.name,
         text,
@@ -177,7 +210,17 @@ export class ChatPanel {
       return;
     }
 
+    let lastDateKey: string | null = null;
     for (const msg of this.messages) {
+      const currentDateKey = this.dateKey(msg.timestamp);
+      if (currentDateKey !== lastDateKey) {
+        const divider = document.createElement("div");
+        divider.className = "chat-date-divider";
+        divider.textContent = this.formatDateDivider(msg.timestamp);
+        this.messagesEl.appendChild(divider);
+        lastDateKey = currentDateKey;
+      }
+
       const row = document.createElement("div");
       row.className = `chat-msg chat-msg--${msg.type}`;
 
@@ -226,6 +269,25 @@ export class ChatPanel {
   private formatTime(ts: number): string {
     const d = new Date(ts);
     return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+
+  private dateKey(ts: number): string {
+    const d = new Date(ts);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  private formatDateDivider(ts: number): string {
+    const d = new Date(ts);
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.floor((today - msgDay) / 86_400_000);
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "Yesterday";
+    return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
   }
 
   // ---------------------------------------------------------------------------

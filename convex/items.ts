@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireAdmin } from "./lib/requireAdmin";
+import { requireSuperuser } from "./lib/requireSuperuser";
 
 // ---------------------------------------------------------------------------
 // Item type / rarity validators (must match schema)
@@ -96,9 +96,10 @@ export const save = mutation({
     isUnique: v.optional(v.boolean()),
     tags: v.optional(v.array(v.string())),
     lore: v.optional(v.string()),
+    pickupSoundUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireAdmin(ctx, args.profileId);
+    await requireSuperuser(ctx, args.profileId);
 
     const existing = await ctx.db
       .query("itemDefs")
@@ -124,7 +125,7 @@ export const remove = mutation({
     id: v.id("itemDefs"),
   },
   handler: async (ctx, { profileId, id }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
     await ctx.db.delete(id);
   },
 });

@@ -28,6 +28,7 @@ export interface WorldItemDefInfo {
   displayName: string;
   type: string;
   rarity: string;
+  pickupSoundUrl?: string;
   iconTilesetUrl?: string;
   iconTileX?: number;
   iconTileY?: number;
@@ -85,6 +86,9 @@ export class WorldItemLayer {
   /** Currently highlighted item (nearest within radius) */
   private nearestItem: RenderedWorldItem | null = null;
 
+  /** Build mode flag — picked-up items shown more prominently */
+  private buildMode = false;
+
   /** Elapsed time for bob animation */
   private elapsed = 0;
 
@@ -115,26 +119,15 @@ export class WorldItemLayer {
     itemContainer.y = item.y;
     itemContainer.zIndex = Math.round(item.y);
 
-    // Glow circle
-    const glowColor = RARITY_COLORS[def.rarity] ?? 0xffffff;
-    const glow = new Graphics();
-    glow.circle(0, -8, GLOW_RADIUS);
-    glow.fill({ color: glowColor, alpha: GLOW_ALPHA });
-    glow.visible = false; // only shown when player is near
-    itemContainer.addChild(glow);
-
     // Item visual
     let visual: Sprite | Graphics;
+    const itemH = def.iconTileH ?? 16;
     if (def.iconTilesetUrl && def.iconTileW && def.iconTileH) {
       // Create sprite from tileset crop
       const texture = await this.loadCroppedTexture(def);
       if (texture) {
         visual = new Sprite(texture);
         visual.anchor.set(0.5, 1.0);
-        // Scale so items are ~20-24px tall on screen
-        const targetH = 24;
-        const scaleF = targetH / def.iconTileH!;
-        visual.scale.set(scaleF);
       } else {
         visual = this.createFallbackVisual(def);
       }
@@ -143,7 +136,15 @@ export class WorldItemLayer {
     }
     itemContainer.addChild(visual);
 
-    // Pickup prompt
+    // Glow circle (centered on item)
+    const glowColor = RARITY_COLORS[def.rarity] ?? 0xffffff;
+    const glow = new Graphics();
+    glow.circle(0, -(itemH / 2), GLOW_RADIUS);
+    glow.fill({ color: glowColor, alpha: GLOW_ALPHA });
+    glow.visible = false; // only shown when player is near
+    itemContainer.addChild(glow);
+
+    // Pickup prompt (above item)
     const prompt = new Text({
       text: `[E] ${def.displayName}`,
       style: new TextStyle({
@@ -154,12 +155,27 @@ export class WorldItemLayer {
       }),
     });
     prompt.anchor.set(0.5, 1);
-    prompt.y = -30;
+    prompt.y = -(itemH + 6);
     prompt.visible = false;
     itemContainer.addChild(prompt);
 
     if (!available) {
-      itemContainer.alpha = 0.3;
+      itemContainer.alpha = this.buildMode ? 0.6 : 0.3;
+      // Add a "respawning" label visible in build mode
+      const respawnLabel = new Text({
+        text: "respawning",
+        style: new TextStyle({
+          fontSize: 8,
+          fill: 0xffaa00,
+          fontFamily: "Inter, sans-serif",
+          stroke: { color: 0x000000, width: 2 },
+        }),
+      });
+      respawnLabel.anchor.set(0.5, 0);
+      respawnLabel.y = 2;
+      respawnLabel.label = "respawn-label";
+      respawnLabel.visible = this.buildMode;
+      itemContainer.addChild(respawnLabel);
     }
 
     this.container.addChild(itemContainer);
@@ -261,6 +277,13 @@ export class WorldItemLayer {
     return def?.displayName ?? this.nearestItem.defName;
   }
 
+  /** Get pickup SFX URL for the nearest item (if defined) */
+  getNearestItemPickupSoundUrl(): string | null {
+    if (!this.nearestItem) return null;
+    const def = this.defCache.get(this.nearestItem.defName);
+    return def?.pickupSoundUrl ?? null;
+  }
+
   /** Mark an item as picked up (fade it out or remove it) */
   markPickedUp(id: string, respawns: boolean) {
     const r = this.rendered.find((r) => r.id === id);
@@ -276,6 +299,49 @@ export class WorldItemLayer {
     }
   }
 
+  /** Toggle build mode — picked-up items shown with higher visibility */
+  setBuildMode(enabled: boolean) {
+    this.buildMode = enabled;
+    for (const r of this.rendered) {
+      if (!r.available) {
+        // In build mode: show at 60% alpha with a label; in play mode: dim at 30%
+        r.container.alpha = enabled ? 0.6 : 0.3;
+        // Show/hide the respawn label
+        const label = r.container.children.find(
+          (c) => c.label === "respawn-label",
+        );
+        if (label) label.visible = enabled;
+      }
+    }
+  }
+
+  /** Find the item nearest to worldX/worldY within a radius (for build-mode inspection) */
+  findItemAt(worldX: number, worldY: number, radius = 24): {
+    id: string;
+    defName: string;
+    available: boolean;
+    def?: WorldItemDefInfo;
+  } | null {
+    let best: RenderedWorldItem | null = null;
+    let bestDist = radius;
+    for (const r of this.rendered) {
+      const dx = r.baseX - worldX;
+      const dy = r.baseY - worldY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        best = r;
+        bestDist = dist;
+      }
+    }
+    if (!best) return null;
+    return {
+      id: best.id,
+      defName: best.defName,
+      available: best.available,
+      def: this.defCache.get(best.defName),
+    };
+  }
+
   /** Clear everything */
   clear() {
     for (const r of this.rendered) {
@@ -289,6 +355,56 @@ export class WorldItemLayer {
   destroy() {
     this.clear();
     this.container.destroy();
+  }
+
+  // =========================================================================
+  // Ghost preview (cursor-following item preview in build mode)
+  // =========================================================================
+
+  private ghostSprite: Sprite | Graphics | null = null;
+  private ghostDefName: string | null = null;
+
+  /** Show a semi-transparent ghost of an item def at the cursor */
+  async showGhost(def: WorldItemDefInfo) {
+    // Don't reload if same def
+    if (this.ghostDefName === def.name && this.ghostSprite) return;
+    this.hideGhost();
+    this.ghostDefName = def.name;
+
+    let visual: Sprite | Graphics;
+    if (def.iconTilesetUrl && def.iconTileW && def.iconTileH) {
+      const texture = await this.loadCroppedTexture(def);
+      if (texture) {
+        visual = new Sprite(texture);
+        visual.anchor.set(0.5, 1.0);
+      } else {
+        visual = this.createFallbackVisual(def);
+      }
+    } else {
+      visual = this.createFallbackVisual(def);
+    }
+    visual.alpha = 0.45;
+    visual.zIndex = 99999;
+    this.container.addChild(visual);
+    this.ghostSprite = visual;
+  }
+
+  /** Update ghost position */
+  updateGhost(worldX: number, worldY: number) {
+    if (this.ghostSprite) {
+      this.ghostSprite.x = worldX;
+      this.ghostSprite.y = worldY;
+    }
+  }
+
+  /** Hide and destroy the ghost */
+  hideGhost() {
+    if (this.ghostSprite) {
+      this.container.removeChild(this.ghostSprite);
+      this.ghostSprite.destroy();
+      this.ghostSprite = null;
+      this.ghostDefName = null;
+    }
   }
 
   // =========================================================================

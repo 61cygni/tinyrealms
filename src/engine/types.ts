@@ -53,7 +53,7 @@ export interface MapData {
   ambientSoundUrl?: string;
   combatEnabled?: boolean;
   status?: string;        // "draft" | "published"
-  isHub?: boolean;
+  mapType?: string;       // "public" | "private" | "system"
   editors?: string[];     // profile IDs that can edit this map
   creatorProfileId?: string;
 }
@@ -117,7 +117,7 @@ export interface ProfileData {
   name: string;
   spriteUrl: string;
   color: string;
-  role: string;  // "admin" | "player"
+  role: string;  // "superuser" | "player"
   stats: {
     hp: number;
     maxHp: number;
@@ -130,6 +130,7 @@ export interface ProfileData {
   items: { name: string; quantity: number }[];
   npcsChatted: string[];
   mapName?: string;
+  startLabel?: string;
   x?: number;
   y?: number;
   direction?: string;

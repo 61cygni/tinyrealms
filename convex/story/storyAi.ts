@@ -11,7 +11,7 @@ export const generateDialogue = action({
     conversationHistory: v.optional(v.any()),
   },
   handler: async (_ctx, { systemPrompt, userMessage, conversationHistory }) => {
-    const apiKey = process.env.BRAINTRUST_API_KEY;
+    const apiKey = (globalThis as any)?.process?.env?.BRAINTRUST_API_KEY as string | undefined;
     if (!apiKey) throw new Error("BRAINTRUST_API_KEY not configured");
 
     const messages: any[] = [{ role: "system", content: systemPrompt }];
@@ -58,7 +58,7 @@ export const expandNarrative = action({
     ),
   },
   handler: async (_ctx, { prompt, context, type }) => {
-    const apiKey = process.env.BRAINTRUST_API_KEY;
+    const apiKey = (globalThis as any)?.process?.env?.BRAINTRUST_API_KEY as string | undefined;
     if (!apiKey) throw new Error("BRAINTRUST_API_KEY not configured");
 
     const systemPrompts: Record<string, string> = {

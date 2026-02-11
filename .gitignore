@@ -23,3 +23,10 @@ dumps/
 *.njsproj
 *.sln
 *.sw?
+
+# Local Netlify folder
+.netlify
+
+# Local scratch/secrets
+Notes.txt
+.env.local.bak

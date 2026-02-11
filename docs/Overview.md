@@ -343,7 +343,7 @@ These commands **permanently delete data**. Use with care.
 
 | npm script | What it does |
 |------------|-------------|
-| `npm run backfill:maps` | Patch existing maps with default values for multi-map fields (`portals`, `status`, `combatEnabled`, `isHub`, `editors`, `musicUrl`). Safe to run multiple times. |
+| `npm run backfill:maps` | Patch existing maps with default values for multi-map fields (`portals`, `status`, `combatEnabled`, `mapType`, `editors`, `musicUrl`). Safe to run multiple times. |
 
 ### Direct Convex commands
 
@@ -417,7 +417,7 @@ These require the caller to be a **global admin**, the **map creator**, or liste
 | Mutation | Purpose |
 |----------|---------|
 | `maps.saveFullMap` | Save map tile/collision/label/portal data |
-| `maps.updateMetadata` | Update music, combat, status, hub flag |
+| `maps.updateMetadata` | Update music, combat, status |
 | `mapObjects.place` | Place an object on the map |
 | `mapObjects.move` | Move a placed object |
 | `mapObjects.remove` | Remove a placed object |

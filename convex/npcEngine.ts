@@ -12,9 +12,9 @@ import { internal } from "./_generated/api";
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
-const TICK_MS = 500; // server tick interval (ms)
-const IDLE_MIN_MS = 1500; // minimum idle pause before next wander
-const IDLE_MAX_MS = 5000; // maximum idle pause
+const TICK_MS = 1500; // server tick interval (ms) — was 500ms, increased to reduce DB growth
+const IDLE_MIN_MS = 3000; // minimum idle pause before next wander
+const IDLE_MAX_MS = 8000; // maximum idle pause
 const STALE_THRESHOLD_MS = TICK_MS * 4; // if no tick in this long, loop is dead
 
 // ---------------------------------------------------------------------------
@@ -49,12 +49,11 @@ export const tick = internalMutation({
     for (const npc of allNpcs) {
       // --- Idle check ---
       if (npc.idleUntil && now < npc.idleUntil) {
-        // Still pausing — ensure velocity is zero
+        // Still pausing — only patch if velocity needs zeroing (skip no-op writes)
         if (npc.vx !== 0 || npc.vy !== 0) {
           await ctx.db.patch(npc._id, { vx: 0, vy: 0, lastTick: now });
-        } else {
-          await ctx.db.patch(npc._id, { lastTick: now });
         }
+        // Otherwise skip entirely — no DB write needed for idle NPCs
         continue;
       }
 

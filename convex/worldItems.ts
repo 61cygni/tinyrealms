@@ -1,6 +1,8 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
-import { requireAdmin } from "./lib/requireAdmin";
+import { mutation, query, internalMutation } from "./_generated/server";
+import { internal } from "./_generated/api";
+import { requireSuperuser } from "./lib/requireSuperuser";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -44,7 +46,7 @@ export const place = mutation({
     respawnMs: v.optional(v.number()),
   },
   handler: async (ctx, { profileId, ...args }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
     return await ctx.db.insert("worldItems", {
       ...args,
       quantity: args.quantity ?? 1,
@@ -61,7 +63,7 @@ export const remove = mutation({
     id: v.id("worldItems"),
   },
   handler: async (ctx, { profileId, id }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
     await ctx.db.delete(id);
   },
 });
@@ -73,6 +75,7 @@ export const bulkSave = mutation({
     mapName: v.string(),
     items: v.array(
       v.object({
+        sourceId: v.optional(v.id("worldItems")),
         itemDefName: v.string(),
         x: v.float64(),
         y: v.float64(),
@@ -83,28 +86,54 @@ export const bulkSave = mutation({
     ),
   },
   handler: async (ctx, { profileId, mapName, items }) => {
-    await requireAdmin(ctx, profileId);
-    // Delete existing
+    await requireSuperuser(ctx, profileId);
+    // Load existing rows for this map
     const existing = await ctx.db
       .query("worldItems")
       .withIndex("by_map", (q) => q.eq("mapName", mapName))
       .collect();
+
+    const existingById = new Map(existing.map((e) => [String(e._id), e]));
+    const incomingIds = new Set(
+      items
+        .map((i) => i.sourceId ? String(i.sourceId) : null)
+        .filter((id): id is string => id !== null),
+    );
+
+    // Delete rows that were removed in the editor
     for (const obj of existing) {
-      await ctx.db.delete(obj._id);
+      if (!incomingIds.has(String(obj._id))) {
+        await ctx.db.delete(obj._id);
+      }
     }
-    // Insert new
+
+    // Upsert incoming rows. Preserve pickup/respawn state for existing rows.
     for (const item of items) {
-      await ctx.db.insert("worldItems", {
-        mapName,
-        itemDefName: item.itemDefName,
-        x: item.x,
-        y: item.y,
-        quantity: item.quantity ?? 1,
-        respawn: item.respawn,
-        respawnMs: item.respawnMs,
-        updatedAt: Date.now(),
-        placedBy: profileId,
-      });
+      if (item.sourceId && existingById.has(String(item.sourceId))) {
+        await ctx.db.patch(item.sourceId, {
+          mapName,
+          itemDefName: item.itemDefName,
+          x: item.x,
+          y: item.y,
+          quantity: item.quantity ?? 1,
+          respawn: item.respawn,
+          respawnMs: item.respawnMs,
+          updatedAt: Date.now(),
+          placedBy: profileId,
+        });
+      } else {
+        await ctx.db.insert("worldItems", {
+          mapName,
+          itemDefName: item.itemDefName,
+          x: item.x,
+          y: item.y,
+          quantity: item.quantity ?? 1,
+          respawn: item.respawn,
+          respawnMs: item.respawnMs,
+          updatedAt: Date.now(),
+          placedBy: profileId,
+        });
+      }
     }
   },
 });
@@ -119,16 +148,23 @@ export const pickup = mutation({
     worldItemId: v.id("worldItems"),
   },
   handler: async (ctx, { profileId, worldItemId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return { success: false, reason: "Not authenticated" };
+
     const worldItem = await ctx.db.get(worldItemId);
     if (!worldItem) return { success: false, reason: "Item not found" };
+    const itemDef = await ctx.db
+      .query("itemDefs")
+      .withIndex("by_name", (q) => q.eq("name", worldItem.itemDefName))
+      .first();
 
     // Check if already picked up (and not respawned)
     if (worldItem.pickedUpAt) {
       if (!worldItem.respawn) {
         return { success: false, reason: "Already picked up" };
       }
-      // Check respawn timer
-      const respawnMs = worldItem.respawnMs ?? 30_000;
+      // Check respawn timer (use same default as the scheduler)
+      const respawnMs = worldItem.respawnMs ?? 300_000;
       if (Date.now() - worldItem.pickedUpAt < respawnMs) {
         return { success: false, reason: "Not yet respawned" };
       }
@@ -137,6 +173,9 @@ export const pickup = mutation({
     // Add to player inventory
     const profile = await ctx.db.get(profileId);
     if (!profile) return { success: false, reason: "Profile not found" };
+    if (profile.userId !== userId) {
+      return { success: false, reason: "Cannot pick up items for another profile" };
+    }
 
     const items = [...profile.items];
     const existing = items.find((i) => i.name === worldItem.itemDefName);
@@ -153,6 +192,11 @@ export const pickup = mutation({
         pickedUpAt: Date.now(),
         pickedUpBy: profileId,
       });
+      // Schedule respawn: clear pickedUpAt after the delay
+      const respawnMs = worldItem.respawnMs ?? 300_000; // default 5 minutes
+      await ctx.scheduler.runAfter(respawnMs, internal.worldItems.respawn, {
+        worldItemId,
+      });
     } else {
       await ctx.db.delete(worldItemId);
     }
@@ -161,6 +205,21 @@ export const pickup = mutation({
       success: true,
       itemName: worldItem.itemDefName,
       quantity: worldItem.quantity,
+      respawns: !!worldItem.respawn,
+      pickupSoundUrl: itemDef?.pickupSoundUrl,
     };
+  },
+});
+
+/** Internal: clear pickedUpAt so the item reappears */
+export const respawn = internalMutation({
+  args: { worldItemId: v.id("worldItems") },
+  handler: async (ctx, { worldItemId }) => {
+    const item = await ctx.db.get(worldItemId);
+    if (!item) return; // item was deleted
+    await ctx.db.patch(worldItemId, {
+      pickedUpAt: undefined,
+      pickedUpBy: undefined,
+    });
   },
 });

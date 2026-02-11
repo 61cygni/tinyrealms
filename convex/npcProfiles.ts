@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireAdmin } from "./lib/requireAdmin";
+import { requireSuperuser } from "./lib/requireSuperuser";
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -111,7 +111,7 @@ export const save = mutation({
     tags: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
-    await requireAdmin(ctx, args.profileId);
+    await requireSuperuser(ctx, args.profileId);
 
     const existing = await ctx.db
       .query("npcProfiles")
@@ -138,7 +138,7 @@ export const assignInstanceName = mutation({
     instanceName: v.string(),
   },
   handler: async (ctx, { profileId, mapObjectId, instanceName }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
 
     // Ensure instance name is unique across all mapObjects
     const allObjects = await ctx.db.query("mapObjects").collect();
@@ -163,7 +163,7 @@ export const remove = mutation({
     id: v.id("npcProfiles"),
   },
   handler: async (ctx, { profileId, id }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
     await ctx.db.delete(id);
   },
 });

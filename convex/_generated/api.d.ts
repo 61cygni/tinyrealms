@@ -11,15 +11,19 @@
 import type * as admin from "../admin.js";
 import type * as auth from "../auth.js";
 import type * as chat from "../chat.js";
+import type * as http from "../http.js";
 import type * as items from "../items.js";
 import type * as lib_requireAdmin from "../lib/requireAdmin.js";
+import type * as lib_requireAdminKey from "../lib/requireAdminKey.js";
 import type * as lib_requireMapEditor from "../lib/requireMapEditor.js";
+import type * as lib_requireSuperuser from "../lib/requireSuperuser.js";
 import type * as mapObjects from "../mapObjects.js";
 import type * as maps from "../maps.js";
 import type * as mechanics_combat from "../mechanics/combat.js";
 import type * as mechanics_economy from "../mechanics/economy.js";
 import type * as mechanics_inventory from "../mechanics/inventory.js";
 import type * as mechanics_loot from "../mechanics/loot.js";
+import type * as migrations from "../migrations.js";
 import type * as npcEngine from "../npcEngine.js";
 import type * as npcProfiles from "../npcProfiles.js";
 import type * as npcs from "../npcs.js";
@@ -34,6 +38,7 @@ import type * as story_events from "../story/events.js";
 import type * as story_lore from "../story/lore.js";
 import type * as story_quests from "../story/quests.js";
 import type * as story_storyAi from "../story/storyAi.js";
+import type * as superuser from "../superuser.js";
 import type * as worldItems from "../worldItems.js";
 
 import type {
@@ -46,15 +51,19 @@ declare const fullApi: ApiFromModules<{
   admin: typeof admin;
   auth: typeof auth;
   chat: typeof chat;
+  http: typeof http;
   items: typeof items;
   "lib/requireAdmin": typeof lib_requireAdmin;
+  "lib/requireAdminKey": typeof lib_requireAdminKey;
   "lib/requireMapEditor": typeof lib_requireMapEditor;
+  "lib/requireSuperuser": typeof lib_requireSuperuser;
   mapObjects: typeof mapObjects;
   maps: typeof maps;
   "mechanics/combat": typeof mechanics_combat;
   "mechanics/economy": typeof mechanics_economy;
   "mechanics/inventory": typeof mechanics_inventory;
   "mechanics/loot": typeof mechanics_loot;
+  migrations: typeof migrations;
   npcEngine: typeof npcEngine;
   npcProfiles: typeof npcProfiles;
   npcs: typeof npcs;
@@ -69,6 +78,7 @@ declare const fullApi: ApiFromModules<{
   "story/lore": typeof story_lore;
   "story/quests": typeof story_quests;
   "story/storyAi": typeof story_storyAi;
+  superuser: typeof superuser;
   worldItems: typeof worldItems;
 }>;
 

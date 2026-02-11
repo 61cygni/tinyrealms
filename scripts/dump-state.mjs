@@ -16,6 +16,13 @@ import { resolve, dirname } from "path";
 import { tmpdir } from "os";
 
 const ROOT = resolve(dirname(new URL(import.meta.url).pathname), "..");
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+if (!ADMIN_API_KEY) {
+  console.error("Error: ADMIN_API_KEY is not set in your shell environment.");
+  console.error("Set it before running this script:");
+  console.error("  export ADMIN_API_KEY='your-secret'");
+  process.exit(1);
+}
 
 // Parse flags
 const args = process.argv.slice(2);
@@ -24,7 +31,7 @@ const outIdx = args.indexOf("--out");
 const outArg = outIdx >= 0 ? args[outIdx + 1] : null;
 
 // Build the Convex run arguments
-const fnArgs = JSON.stringify({ includeTiles: includeTiles || undefined });
+const fnArgs = JSON.stringify({ adminKey: ADMIN_API_KEY, includeTiles: includeTiles || undefined });
 const tmpFile = resolve(tmpdir(), `convex-dump-${Date.now()}.json`);
 
 console.log("Querying Convex (admin:dumpAll)...");

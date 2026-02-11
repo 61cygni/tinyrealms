@@ -96,6 +96,15 @@
   padding: 24px 0;
 }
 
+.chat-date-divider {
+  margin: 8px 0 4px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
 /* Messages */
 .chat-msg {
   font-size: 13px;

@@ -9,7 +9,7 @@ import "./MapEditor.css";
 import "./TilesetPicker.css";
 import "./LayerPanel.css";
 
-export type EditorTool = "paint" | "erase" | "collision" | "collision-erase" | "object" | "object-erase" | "npc" | "npc-erase" | "portal" | "label" | "item" | "item-erase";
+export type EditorTool = "paint" | "erase" | "collision" | "collision-erase" | "object" | "object-erase" | "npc" | "npc-erase" | "portal" | "portal-erase" | "label" | "item" | "item-erase";
 const TOOLS: { key: EditorTool; label: string }[] = [
   { key: "paint",        label: "🖌 Paint" },
   { key: "collision",    label: "🚧 Collision" },
@@ -27,6 +27,7 @@ const DELETE_OPTIONS: { key: EditorTool; label: string }[] = [
   { key: "object-erase",     label: "📦 Object" },
   { key: "npc-erase",        label: "🧑 NPC" },
   { key: "item-erase",       label: "⚔️ Item" },
+  { key: "portal-erase",     label: "🚪 Portal" },
 ];
 
 /** Registry of available tilesets */
@@ -113,6 +114,12 @@ export class MapEditorPanel {
 
   // Tileset drag-selection state
   private tsDragStart: { col: number; row: number } | null = null;
+  /** Irregular (shift-click) tile selection. Each entry is "col,row". */
+  private irregularTiles: Set<string> = new Set();
+  /** Whether the current selection is irregular (shift-selected) vs rectangular */
+  private isIrregularSelection = false;
+  /** Extra highlight elements for irregular tile selections */
+  private irregularHighlights: HTMLDivElement[] = [];
 
   // Object placement state
   private spriteDefs: SpriteDef[] = [];
@@ -128,10 +135,12 @@ export class MapEditorPanel {
     iconTilesetUrl?: string; iconTileX?: number; iconTileY?: number;
     iconTileW?: number; iconTileH?: number }[] = [];
   private selectedItemDef: typeof this.itemDefs[0] | null = null;
-  placedItems: { id: string; itemDefName: string; x: number; y: number;
-    quantity: number; respawn?: boolean }[] = [];
+  placedItems: { id: string; sourceId?: string; itemDefName: string; x: number; y: number;
+    quantity: number; respawn?: boolean; respawnMs?: number; pickedUpAt?: number }[] = [];
   private itemPickerEl!: HTMLElement;
   private itemListEl!: HTMLElement;
+  private itemRespawnCheck!: HTMLInputElement;
+  private itemRespawnTimeInput!: HTMLInputElement;
 
   // Portal editor state
   private portalDraft: {
@@ -277,9 +286,41 @@ export class MapEditorPanel {
 
     this.el.appendChild(toolbar);
 
+    // ---- Resize handle ----
+    const resizeHandle = document.createElement("div");
+    resizeHandle.className = "editor-resize-handle";
+    this.el.appendChild(resizeHandle);
+
     // ---- Panels container ----
     const panels = document.createElement("div");
     panels.className = "editor-panels";
+
+    // Drag-to-resize logic
+    let resizing = false;
+    let startY = 0;
+    let startH = 0;
+    resizeHandle.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      resizing = true;
+      startY = e.clientY;
+      startH = panels.offsetHeight;
+      document.body.style.cursor = "ns-resize";
+      document.body.style.userSelect = "none";
+    });
+    const onMouseMove = (e: MouseEvent) => {
+      if (!resizing) return;
+      const delta = startY - e.clientY; // dragging up = positive = taller
+      const newH = Math.max(120, Math.min(600, startH + delta));
+      panels.style.height = `${newH}px`;
+    };
+    const onMouseUp = () => {
+      if (!resizing) return;
+      resizing = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    };
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
 
     // Left: Layer panel
     panels.appendChild(this.buildLayerPanel());
@@ -571,6 +612,35 @@ export class MapEditorPanel {
     this.itemListEl.className = "object-list";
     picker.appendChild(this.itemListEl);
 
+    // Respawn controls
+    const respawnRow = document.createElement("div");
+    respawnRow.style.cssText = "display:flex;align-items:center;gap:8px;padding:6px 8px;border-top:1px solid var(--border);";
+
+    this.itemRespawnCheck = document.createElement("input");
+    this.itemRespawnCheck.type = "checkbox";
+    this.itemRespawnCheck.id = "item-respawn-check";
+
+    const respawnLabel = document.createElement("label");
+    respawnLabel.htmlFor = "item-respawn-check";
+    respawnLabel.textContent = "Respawn after";
+    respawnLabel.style.cssText = "font-size:11px;color:var(--text);cursor:pointer;";
+
+    this.itemRespawnTimeInput = document.createElement("input");
+    this.itemRespawnTimeInput.type = "number";
+    this.itemRespawnTimeInput.min = "1";
+    this.itemRespawnTimeInput.value = "5";
+    this.itemRespawnTimeInput.style.cssText = "width:42px;font-size:11px;padding:2px 4px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:3px;";
+
+    const minLabel = document.createElement("span");
+    minLabel.textContent = "min";
+    minLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
+
+    respawnRow.appendChild(this.itemRespawnCheck);
+    respawnRow.appendChild(respawnLabel);
+    respawnRow.appendChild(this.itemRespawnTimeInput);
+    respawnRow.appendChild(minLabel);
+    picker.appendChild(respawnRow);
+
     return picker;
   }
 
@@ -639,6 +709,7 @@ export class MapEditorPanel {
         this.selectedItemDef = def;
         this.tileInfoEl.textContent = `Item: ${def.displayName}`;
         this.renderItemList();
+        this.updateGhostForCurrentSelection();
       });
       this.itemListEl.appendChild(row);
     }
@@ -658,19 +729,24 @@ export class MapEditorPanel {
       this.showSaveStatus("Select an item first", true);
       return;
     }
-    const item = {
+    const respawn = this.itemRespawnCheck.checked;
+    const respawnMin = parseFloat(this.itemRespawnTimeInput.value) || 5;
+    const item: typeof this.placedItems[0] = {
       id: crypto.randomUUID(),
       itemDefName: this.selectedItemDef.name,
       x: Math.round(worldX),
       y: Math.round(worldY),
       quantity: 1,
+      respawn: respawn || undefined,
+      respawnMs: respawn ? Math.round(respawnMin * 60 * 1000) : undefined,
     };
     this.placedItems.push(item);
-    this.tileInfoEl.textContent = `Placed: ${this.selectedItemDef.displayName} (${this.placedItems.length} items total)`;
+    const respawnNote = respawn ? ` (respawns in ${respawnMin}m)` : "";
+    this.tileInfoEl.textContent = `Placed: ${this.selectedItemDef.displayName}${respawnNote} (${this.placedItems.length} items total)`;
 
     // Render on the world item layer immediately
-    if (this.game && (this.game as any).worldItemLayer) {
-      (this.game as any).worldItemLayer.addItem({
+    if (this.game && this.game.worldItemLayer) {
+      this.game.worldItemLayer.addItem({
         id: item.id,
         itemDefName: item.itemDefName,
         x: item.x,
@@ -697,11 +773,42 @@ export class MapEditorPanel {
     }
     if (bestIdx >= 0) {
       const removed = this.placedItems.splice(bestIdx, 1)[0];
-      if (this.game && (this.game as any).worldItemLayer) {
-        (this.game as any).worldItemLayer.removeItem(removed.id);
+      if (this.game && this.game.worldItemLayer) {
+        this.game.worldItemLayer.removeItem(removed.id);
       }
       this.tileInfoEl.textContent = `Removed item (${this.placedItems.length} remaining)`;
     }
+  }
+
+  /** Show info about an existing world item at the click location */
+  private inspectItemAt(worldX: number, worldY: number): boolean {
+    const radius = 64;
+    let bestItem: any = null;
+    let bestDist = Infinity;
+    for (const item of this.placedItems) {
+      const dx = item.x - worldX;
+      const dy = item.y - worldY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < radius && dist < bestDist) {
+        bestDist = dist;
+        bestItem = item;
+      }
+    }
+    if (!bestItem) return false;
+
+    const parts: string[] = [`Item: ${bestItem.itemDefName}`];
+    parts.push(`qty: ${bestItem.quantity}`);
+    if (bestItem.respawn) {
+      const mins = Math.round((bestItem.respawnMs ?? 300_000) / 60_000);
+      parts.push(`respawn: ${mins}m`);
+    }
+    if (bestItem.pickedUpAt) {
+      const ago = Math.round((Date.now() - bestItem.pickedUpAt) / 1000);
+      parts.push(`picked up ${ago}s ago`);
+    }
+    parts.push(`pos: (${Math.round(bestItem.x)}, ${Math.round(bestItem.y)})`);
+    this.tileInfoEl.textContent = parts.join("  |  ");
+    return true;
   }
 
   // =========================================================================
@@ -802,14 +909,47 @@ export class MapEditorPanel {
 
   private onTileCanvasDown(e: MouseEvent) {
     const { col, row } = this.tileCanvasToGrid(e);
-    this.tsDragStart = { col, row };
-    this.applyTileSelection(col, row, col, row);
+    if (e.shiftKey) {
+      // Shift+click: toggle individual tile in irregular selection
+      this.isIrregularSelection = true;
+      const key = `${col},${row}`;
+      if (this.irregularTiles.has(key)) {
+        this.irregularTiles.delete(key);
+      } else {
+        this.irregularTiles.add(key);
+      }
+      this.tsDragStart = { col, row };
+      this.updateIrregularHighlights();
+      this.updateIrregularInfo();
+    } else {
+      // Normal click: clear irregular set, start rectangle drag
+      this.isIrregularSelection = false;
+      this.irregularTiles.clear();
+      this.clearIrregularHighlights();
+      this.tsDragStart = { col, row };
+      this.applyTileSelection(col, row, col, row);
+    }
   }
 
   private onTileCanvasMove(e: MouseEvent) {
     if (!this.tsDragStart) return;
     const { col, row } = this.tileCanvasToGrid(e);
-    this.applyTileSelection(this.tsDragStart.col, this.tsDragStart.row, col, row);
+    if (e.shiftKey && this.isIrregularSelection) {
+      // Shift+drag: add all tiles in the dragged rectangle to the irregular set
+      const minC = Math.min(this.tsDragStart.col, col);
+      const maxC = Math.max(this.tsDragStart.col, col);
+      const minR = Math.min(this.tsDragStart.row, row);
+      const maxR = Math.max(this.tsDragStart.row, row);
+      for (let r = minR; r <= maxR; r++) {
+        for (let c = minC; c <= maxC; c++) {
+          this.irregularTiles.add(`${c},${r}`);
+        }
+      }
+      this.updateIrregularHighlights();
+      this.updateIrregularInfo();
+    } else if (!this.isIrregularSelection) {
+      this.applyTileSelection(this.tsDragStart.col, this.tsDragStart.row, col, row);
+    }
   }
 
   private onTileCanvasUp() {
@@ -845,6 +985,69 @@ export class MapEditorPanel {
     this.highlightEl.style.top = r.row * DISPLAY_TILE_SIZE + "px";
     this.highlightEl.style.width = r.w * DISPLAY_TILE_SIZE + "px";
     this.highlightEl.style.height = r.h * DISPLAY_TILE_SIZE + "px";
+  }
+
+  /** Rebuild the per-tile highlight elements for irregular selection */
+  private updateIrregularHighlights() {
+    // Hide the rectangular highlight when in irregular mode
+    this.highlightEl.style.display = this.isIrregularSelection ? "none" : "";
+
+    // Remove old highlights
+    this.clearIrregularHighlights();
+
+    if (!this.isIrregularSelection) return;
+
+    const parent = this.highlightEl.parentElement;
+    if (!parent) return;
+
+    for (const key of this.irregularTiles) {
+      const [c, r] = key.split(",").map(Number);
+      const el = document.createElement("div");
+      el.className = "tileset-highlight";
+      el.style.left = c * DISPLAY_TILE_SIZE + "px";
+      el.style.top = r * DISPLAY_TILE_SIZE + "px";
+      el.style.width = DISPLAY_TILE_SIZE + "px";
+      el.style.height = DISPLAY_TILE_SIZE + "px";
+      parent.appendChild(el);
+      this.irregularHighlights.push(el);
+    }
+  }
+
+  private clearIrregularHighlights() {
+    for (const el of this.irregularHighlights) el.remove();
+    this.irregularHighlights = [];
+  }
+
+  /** Update status text for irregular selection */
+  private updateIrregularInfo() {
+    if (this.irregularTiles.size === 0) {
+      this.tileInfoEl.textContent = "No tiles selected";
+    } else {
+      this.tileInfoEl.textContent = `Selected: ${this.irregularTiles.size} tiles (Shift+click)`;
+    }
+  }
+
+  /** Get the irregular selection as an array of {col, row, tileIdx} relative to its bounding box origin */
+  private getIrregularSelectionTiles(): { dx: number; dy: number; tileIdx: number }[] {
+    if (this.irregularTiles.size === 0) return [];
+    const ts = this.activeTileset;
+    const tsCols = Math.floor(ts.imageWidth / ts.tileWidth);
+
+    // Parse all positions
+    const positions = [...this.irregularTiles].map((k) => {
+      const [c, r] = k.split(",").map(Number);
+      return { col: c, row: r };
+    });
+
+    // Find bounding box origin
+    const minCol = Math.min(...positions.map((p) => p.col));
+    const minRow = Math.min(...positions.map((p) => p.row));
+
+    return positions.map((p) => ({
+      dx: p.col - minCol,
+      dy: p.row - minRow,
+      tileIdx: p.row * tsCols + p.col,
+    }));
   }
 
   /** Sync map tile size to the tileset's native tile size, re-render if changed */
@@ -996,8 +1199,13 @@ export class MapEditorPanel {
         frameWidth: this.selectedSpriteDef.frameWidth,
         frameHeight: this.selectedSpriteDef.frameHeight,
       });
+      this.game.worldItemLayer?.hideGhost();
+    } else if (this.tool === "item" && this.selectedItemDef) {
+      this.game.worldItemLayer?.showGhost(this.selectedItemDef);
+      this.game.objectLayer.hideGhost();
     } else {
       this.game.objectLayer.hideGhost();
+      this.game.worldItemLayer?.hideGhost();
     }
   }
 
@@ -1041,7 +1249,7 @@ export class MapEditorPanel {
       if (!this.isPainting || game.mode !== "build") return;
       // Only allow drag-paint for tile tools, not object/npc/item/portal/label
       const noDrag: EditorTool[] = ["object", "object-erase", "npc", "npc-erase",
-        "item", "item-erase", "portal", "label"];
+        "item", "item-erase", "portal", "portal-erase", "label"];
       if (!noDrag.includes(this.tool)) {
         this.handleCanvasAction(e, game, canvas);
       }
@@ -1069,7 +1277,12 @@ export class MapEditorPanel {
             if (this.tool === "paint") {
               const ts = this.activeTileset;
               const tsCols = Math.floor(ts.imageWidth / ts.tileWidth);
-              game.mapRenderer.showTileGhost(tx, ty, this.selectedRegion, tsCols);
+              if (this.isIrregularSelection && this.irregularTiles.size > 0) {
+                const tiles = this.getIrregularSelectionTiles();
+                game.mapRenderer.showIrregularTileGhost(tx, ty, tiles, tsCols);
+              } else {
+                game.mapRenderer.showTileGhost(tx, ty, this.selectedRegion, tsCols);
+              }
             } else {
               game.mapRenderer.showTileGhost(tx, ty, null, 0);
             }
@@ -1083,6 +1296,7 @@ export class MapEditorPanel {
       } else if (this.tool === "item" || this.tool === "item-erase") {
         game.mapRenderer.hideTileGhost();
         game.objectLayer?.hideGhost();
+        game.worldItemLayer?.updateGhost(worldX, worldY);
       } else if (this.tool === "portal") {
         game.mapRenderer.hideTileGhost();
         const mapData = game.mapRenderer.getMapData();
@@ -1155,9 +1369,14 @@ export class MapEditorPanel {
     } else if (this.tool === "object-erase" || this.tool === "npc-erase") {
       this.removeObjectAt(worldX, worldY);
     } else if (this.tool === "item") {
-      this.placeItem(worldX, worldY);
+      // If clicking near an existing item, inspect it; otherwise place
+      if (!this.inspectItemAt(worldX, worldY)) {
+        this.placeItem(worldX, worldY);
+      }
     } else if (this.tool === "item-erase") {
       this.removeItemAt(worldX, worldY);
+    } else if (this.tool === "portal-erase") {
+      this.removePortalAt(worldX, worldY);
     } else {
       this.paintTileAt(worldX, worldY, game);
     }
@@ -1173,17 +1392,29 @@ export class MapEditorPanel {
     if (tileX < 0 || tileY < 0 || tileX >= mapData.width || tileY >= mapData.height) return;
 
     if (this.tool === "paint") {
-      // Stamp the full selected region
-      const ts = this.activeTileset;
-      const tsCols = Math.floor(ts.imageWidth / ts.tileWidth);
-      const r = this.selectedRegion;
-      for (let dy = 0; dy < r.h; dy++) {
-        for (let dx = 0; dx < r.w; dx++) {
-          const mx = tileX + dx;
-          const my = tileY + dy;
+      if (this.isIrregularSelection && this.irregularTiles.size > 0) {
+        // Stamp the irregular tile selection
+        const tiles = this.getIrregularSelectionTiles();
+        for (const t of tiles) {
+          const mx = tileX + t.dx;
+          const my = tileY + t.dy;
           if (mx >= 0 && my >= 0 && mx < mapData.width && my < mapData.height) {
-            const tileIdx = (r.row + dy) * tsCols + (r.col + dx);
-            game.mapRenderer.setTile(this.activeLayer, mx, my, tileIdx);
+            game.mapRenderer.setTile(this.activeLayer, mx, my, t.tileIdx);
+          }
+        }
+      } else {
+        // Stamp the full selected rectangular region
+        const ts = this.activeTileset;
+        const tsCols = Math.floor(ts.imageWidth / ts.tileWidth);
+        const r = this.selectedRegion;
+        for (let dy = 0; dy < r.h; dy++) {
+          for (let dx = 0; dx < r.w; dx++) {
+            const mx = tileX + dx;
+            const my = tileY + dy;
+            if (mx >= 0 && my >= 0 && mx < mapData.width && my < mapData.height) {
+              const tileIdx = (r.row + dy) * tsCols + (r.col + dx);
+              game.mapRenderer.setTile(this.activeLayer, mx, my, tileIdx);
+            }
           }
         }
       }
@@ -1603,6 +1834,36 @@ export class MapEditorPanel {
     }
   }
 
+  /** Remove the portal at the clicked tile position */
+  private removePortalAt(worldX: number, worldY: number) {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData || !mapData.portals) return;
+
+    const tw = mapData.tileWidth;
+    const th = mapData.tileHeight;
+    const tileX = worldX / tw;
+    const tileY = worldY / th;
+
+    // Find the portal whose zone contains the click
+    const idx = mapData.portals.findIndex((p) =>
+      tileX >= p.x && tileX < p.x + p.width &&
+      tileY >= p.y && tileY < p.y + p.height
+    );
+
+    if (idx >= 0) {
+      const removed = mapData.portals.splice(idx, 1)[0];
+      // Update Game's runtime portals
+      if (this.game) {
+        this.game.currentPortals = mapData.portals;
+      }
+      this.tileInfoEl.textContent = `Deleted portal "${removed.name}"`;
+      this.refreshPortalList();
+      this.game?.mapRenderer.renderPortalOverlay();
+    } else {
+      this.tileInfoEl.textContent = "No portal at this location";
+    }
+  }
+
   // =========================================================================
   // Label tool
   // =========================================================================
@@ -1747,7 +2008,7 @@ export class MapEditorPanel {
 
     try {
       const convex = getConvexClient();
-      const mapName = mapData.name || "cozy-cabin";
+      const mapName = mapData.name || this.game?.currentMapName || "cozy-cabin";
 
       // 1) Save map tiles
       const layers = mapData.layers.map((l) => ({
@@ -1819,7 +2080,9 @@ export class MapEditorPanel {
             layer: o.layer,
           };
           if (o.instanceName) obj.instanceName = o.instanceName;
-          if (o.isOn !== undefined) obj.isOn = o.isOn;
+          // Send existingId for objects loaded from Convex (they have non-UUID ids).
+          // This lets bulkSave patch them in place, preserving runtime state (isOn).
+          if (o.id && !o.id.includes("-")) obj.existingId = o.id;
           return obj;
         }),
       } as any);
@@ -1829,13 +2092,21 @@ export class MapEditorPanel {
         profileId,
         mapName,
         items: this.placedItems.map((i) => ({
+          sourceId: i.sourceId as any,
           itemDefName: i.itemDefName,
           x: i.x,
           y: i.y,
           quantity: i.quantity ?? 1,
           respawn: i.respawn,
+          respawnMs: i.respawnMs,
         })),
       });
+
+      // Re-fetch objects and world items so newly placed entries get their
+      // Convex _ids. This ensures subsequent saves correctly send existingId
+      // for objects, and pickup works for freshly placed items.
+      await this.loadPlacedObjects(mapName);
+      await this.loadPlacedItems(mapName);
 
       this.showSaveStatus("Saved ✓");
     } catch (err) {
@@ -1870,11 +2141,14 @@ export class MapEditorPanel {
       const result = await convex.query(api.worldItems.listByMap, { mapName });
       this.placedItems = result.items.map((i: any) => ({
         id: i._id,
+        sourceId: i._id,
         itemDefName: i.itemDefName,
         x: i.x,
         y: i.y,
         quantity: i.quantity ?? 1,
         respawn: i.respawn,
+        respawnMs: i.respawnMs,
+        pickedUpAt: i.pickedUpAt,
       }));
     } catch (err) {
       console.warn("Failed to load placed items:", err);

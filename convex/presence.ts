@@ -1,5 +1,15 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { getAuthUserId } from "@convex-dev/auth/server";
+
+async function requireOwnedProfile(ctx: any, profileId: any) {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+  const profile = await ctx.db.get(profileId);
+  if (!profile) throw new Error("Profile not found");
+  if (profile.userId !== userId) throw new Error("Cannot update another player's presence");
+  return profile;
+}
 
 /**
  * Upsert presence for a profile.
@@ -20,6 +30,7 @@ export const update = mutation({
     name: v.string(),
   },
   handler: async (ctx, args) => {
+    await requireOwnedProfile(ctx, args.profileId);
     const existing = await ctx.db
       .query("presence")
       .withIndex("by_profile", (q) => q.eq("profileId", args.profileId))
@@ -62,6 +73,7 @@ export const listByMap = query({
 export const remove = mutation({
   args: { profileId: v.id("profiles") },
   handler: async (ctx, { profileId }) => {
+    await requireOwnedProfile(ctx, profileId);
     const existing = await ctx.db
       .query("presence")
       .withIndex("by_profile", (q) => q.eq("profileId", profileId))

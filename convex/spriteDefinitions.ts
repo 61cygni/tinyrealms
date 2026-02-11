@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireAdmin } from "./lib/requireAdmin";
+import { requireSuperuser } from "./lib/requireSuperuser";
 
 /** List all saved sprite definitions */
 export const list = query({
@@ -54,9 +54,17 @@ export const save = mutation({
     onAnimation: v.optional(v.string()),
     offAnimation: v.optional(v.string()),
     onSoundUrl: v.optional(v.string()),
+    // Door
+    isDoor: v.optional(v.boolean()),
+    doorClosedAnimation: v.optional(v.string()),
+    doorOpeningAnimation: v.optional(v.string()),
+    doorOpenAnimation: v.optional(v.string()),
+    doorClosingAnimation: v.optional(v.string()),
+    doorOpenSoundUrl: v.optional(v.string()),
+    doorCloseSoundUrl: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await requireAdmin(ctx, args.profileId);
+    await requireSuperuser(ctx, args.profileId);
 
     const existing = await ctx.db
       .query("spriteDefinitions")
@@ -68,7 +76,8 @@ export const save = mutation({
     const data = { ...fields, updatedAt: Date.now() };
 
     if (existing) {
-      await ctx.db.patch(existing._id, data);
+      // Use replace (not patch) so that cleared optional fields are actually removed
+      await ctx.db.replace(existing._id, data);
       return existing._id;
     } else {
       return await ctx.db.insert("spriteDefinitions", data);
@@ -83,7 +92,7 @@ export const remove = mutation({
     id: v.id("spriteDefinitions"),
   },
   handler: async (ctx, { profileId, id }) => {
-    await requireAdmin(ctx, profileId);
+    await requireSuperuser(ctx, profileId);
     await ctx.db.delete(id);
   },
 });

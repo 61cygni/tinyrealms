@@ -15,14 +15,25 @@ export const get = query({
   },
 });
 
+const frameValidator = v.record(v.string(), v.object({
+  frame: v.object({ x: v.number(), y: v.number(), w: v.number(), h: v.number() }),
+  rotated: v.optional(v.boolean()),
+  trimmed: v.optional(v.boolean()),
+  spriteSourceSize: v.optional(v.object({
+    x: v.number(), y: v.number(), w: v.number(), h: v.number(),
+  })),
+  sourceSize: v.optional(v.object({ w: v.number(), h: v.number() })),
+}));
+const animValidator = v.record(v.string(), v.array(v.string()));
+
 export const create = mutation({
   args: {
     name: v.string(),
     imageId: v.id("_storage"),
     frameWidth: v.number(),
     frameHeight: v.number(),
-    frames: v.any(),
-    animations: v.any(),
+    frames: frameValidator,
+    animations: animValidator,
   },
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
@@ -39,8 +50,8 @@ export const update = mutation({
     imageId: v.optional(v.id("_storage")),
     frameWidth: v.optional(v.number()),
     frameHeight: v.optional(v.number()),
-    frames: v.optional(v.any()),
-    animations: v.optional(v.any()),
+    frames: v.optional(frameValidator),
+    animations: v.optional(animValidator),
   },
   handler: async (ctx, { id, ...updates }) => {
     const filtered = Object.fromEntries(

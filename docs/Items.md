@@ -168,7 +168,7 @@ effects: [
   { type: "heal", value: 50, description: "Restores 50 HP" },
   { type: "buff", value: 10, duration: 60, description: "+10 ATK for 60 seconds" },
   { type: "poison", value: 5, duration: 30, description: "Poisons target for 5 dmg/sec" },
-  { type: "teleport", description: "Returns you to the hub map" },
+  { type: "teleport", description: "Returns you to the starting map" },
 ]
 ```
 

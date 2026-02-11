@@ -1,41 +1,24 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { getAuthUserId } from "@convex-dev/auth/server";
+import { DEFAULT_START_MAP } from "./maps";
 
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 
-/** List all profiles (for the selection screen).
- *  Also checks for stale claims — if a profile is marked inUse but has no
- *  active presence row, it's effectively released (browser closed/refreshed). */
+/** List profiles for the authenticated user (for the selection screen). */
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const profiles = await ctx.db.query("profiles").collect();
+    const userId = await getAuthUserId(ctx);
+    if (!userId) return [];
 
-    // For each in-use profile, verify there's still an active presence row
-    // with a recent lastSeen timestamp. Presence updates every ~200ms, so
-    // anything older than 15 seconds means the player is gone.
-    const STALE_PRESENCE_MS = 15_000;
-    const now = Date.now();
-
-    const result = [];
-    for (const p of profiles) {
-      if (p.inUse) {
-        const presence = await ctx.db
-          .query("presence")
-          .withIndex("by_profile", (q) => q.eq("profileId", p._id))
-          .first();
-        if (!presence || (now - presence.lastSeen > STALE_PRESENCE_MS)) {
-          // No presence or stale — return as not-in-use to the client
-          // (actual DB cleanup happens via claim/release/cleanup mutations)
-          result.push({ ...p, inUse: false, inUseSince: undefined });
-          continue;
-        }
-      }
-      result.push(p);
-    }
-    return result;
+    // Get only this user's profiles
+    return await ctx.db
+      .query("profiles")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
   },
 });
 
@@ -43,7 +26,7 @@ export const list = query({
 export const get = query({
   args: { id: v.id("profiles") },
   handler: async (ctx, { id }) => {
-    return await ctx.db.get(id);
+    return await requireOwnedProfile(ctx, id);
   },
 });
 
@@ -61,34 +44,52 @@ const DEFAULT_STATS = {
   xp: 0,
 };
 
-/** Create a new profile */
+async function requireOwnedProfile(ctx: any, id: any) {
+  const userId = await getAuthUserId(ctx);
+  if (!userId) throw new Error("Not authenticated");
+  const profile = await ctx.db.get(id);
+  if (!profile) throw new Error("Profile not found");
+  if (profile.userId !== userId) {
+    throw new Error("You can only access your own profiles");
+  }
+  return profile;
+}
+
+/** Create a new profile for the authenticated user.
+ *  All new profiles start as "player". Use the management script
+ *  (`node scripts/manage-users.mjs set-role <name> admin`) to grant admin. */
 export const create = mutation({
   args: {
     name: v.string(),
     spriteUrl: v.string(),
     color: v.optional(v.string()),
-    role: v.optional(v.string()),
+    startMapName: v.optional(v.string()),
+    startLabel: v.optional(v.string()),
   },
-  handler: async (ctx, { name, spriteUrl, color, role }) => {
-    // Check for duplicate names
+  handler: async (ctx, { name, spriteUrl, color, startMapName, startLabel }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    // Check for duplicate names (scoped to this user's profiles)
     const existing = await ctx.db
       .query("profiles")
-      .withIndex("by_name", (q) => q.eq("name", name))
-      .first();
-    if (existing) throw new Error(`Profile "${name}" already exists`);
-
-    // First profile ever created gets admin, rest get player
-    const allProfiles = await ctx.db.query("profiles").collect();
-    const assignedRole = role ?? (allProfiles.length === 0 ? "admin" : "player");
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    if (existing.some((p) => p.name === name)) {
+      throw new Error(`You already have a profile named "${name}"`);
+    }
 
     return await ctx.db.insert("profiles", {
+      userId,
       name,
       spriteUrl,
       color: color ?? "#6c5ce7",
-      role: assignedRole,
+      role: "player",
       stats: DEFAULT_STATS,
       items: [],
       npcsChatted: [],
+      mapName: startMapName ?? "cozy-cabin",
+      startLabel: startLabel ?? "start1",
       createdAt: Date.now(),
     });
   },
@@ -104,6 +105,7 @@ export const savePosition = mutation({
     direction: v.string(),
   },
   handler: async (ctx, { id, ...pos }) => {
+    await requireOwnedProfile(ctx, id);
     await ctx.db.patch(id, pos);
   },
 });
@@ -115,8 +117,7 @@ export const recordNpcChat = mutation({
     npcName: v.string(),
   },
   handler: async (ctx, { id, npcName }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) return;
+    const profile = await requireOwnedProfile(ctx, id);
     if (!profile.npcsChatted.includes(npcName)) {
       await ctx.db.patch(id, {
         npcsChatted: [...profile.npcsChatted, npcName],
@@ -140,6 +141,7 @@ export const updateStats = mutation({
     }),
   },
   handler: async (ctx, { id, stats }) => {
+    await requireOwnedProfile(ctx, id);
     await ctx.db.patch(id, { stats });
   },
 });
@@ -152,8 +154,7 @@ export const addItem = mutation({
     quantity: v.number(),
   },
   handler: async (ctx, { id, itemName, quantity }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) return;
+    const profile = await requireOwnedProfile(ctx, id);
     const items = [...profile.items];
     const existing = items.find((i) => i.name === itemName);
     if (existing) {
@@ -173,8 +174,7 @@ export const removeItem = mutation({
     quantity: v.optional(v.number()),
   },
   handler: async (ctx, { id, itemName, quantity }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) return;
+    const profile = await requireOwnedProfile(ctx, id);
     const items = [...profile.items];
     const idx = items.findIndex((i) => i.name === itemName);
     if (idx < 0) return;
@@ -194,83 +194,37 @@ export const setRole = mutation({
     role: v.string(),
   },
   handler: async (ctx, { id, role }) => {
-    if (role !== "admin" && role !== "player") {
-      throw new Error(`Invalid role "${role}". Must be "admin" or "player".`);
+    if (role !== "superuser" && role !== "player") {
+      throw new Error(`Invalid role "${role}". Must be "superuser" or "player".`);
     }
-    await ctx.db.patch(id, { role });
+    await requireOwnedProfile(ctx, id);
+    throw new Error("profiles.setRole is disabled. Use admin.setRole via management script.");
   },
 });
 
-/** Reset a profile's map to the default (cozy-cabin) so they respawn there */
+/** Reset a profile's map to the default starting map so they respawn there */
 export const resetMap = mutation({
   args: {
     id: v.id("profiles"),
     mapName: v.optional(v.string()),
   },
   handler: async (ctx, { id, mapName }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) throw new Error("Profile not found");
+    const profile = await requireOwnedProfile(ctx, id);
+    const target = mapName ?? DEFAULT_START_MAP;
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { _id, _creationTime, x: _x, y: _y, direction: _d, mapName: _m, ...rest } = profile;
-    await ctx.db.replace(_id, { ...rest, mapName: mapName ?? "cozy-cabin" });
+    await ctx.db.replace(_id, { ...rest, mapName: target });
   },
 });
 
-/** Claim a profile (mark as in-use). Fails if already actively claimed. */
-export const claim = mutation({
-  args: { id: v.id("profiles") },
-  handler: async (ctx, { id }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) throw new Error("Profile not found");
 
-    if (profile.inUse) {
-      // Check if the previous owner still has an active presence row
-      const presence = await ctx.db
-        .query("presence")
-        .withIndex("by_profile", (q) => q.eq("profileId", id))
-        .first();
-      const STALE_PRESENCE_MS = 15_000;
-      const now = Date.now();
-      if (presence && (now - presence.lastSeen < STALE_PRESENCE_MS)) {
-        // Presence is fresh — profile is genuinely in use
-        throw new Error("Profile is already in use by another player");
-      }
-      // No presence row or stale presence — safe to reclaim
-      // Clean up stale presence row if it exists
-      if (presence) {
-        await ctx.db.delete(presence._id);
-      }
-    }
-
-    await ctx.db.patch(id, { inUse: true, inUseSince: Date.now() });
-  },
-});
-
-/** Release a profile (mark as no longer in-use) */
-export const release = mutation({
-  args: { id: v.id("profiles") },
-  handler: async (ctx, { id }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile) return;
-    await ctx.db.patch(id, { inUse: false, inUseSince: undefined });
-  },
-});
-
-/** Heartbeat — refresh inUseSince so the profile doesn't go stale */
-export const heartbeat = mutation({
-  args: { id: v.id("profiles") },
-  handler: async (ctx, { id }) => {
-    const profile = await ctx.db.get(id);
-    if (!profile || !profile.inUse) return;
-    await ctx.db.patch(id, { inUseSince: Date.now() });
-  },
-});
-
-/** Delete a profile */
+/** Delete a profile. Must be the owner. */
 export const remove = mutation({
   args: { id: v.id("profiles") },
   handler: async (ctx, { id }) => {
-    // Also clean up any presence rows
+    await requireOwnedProfile(ctx, id);
+
+    // Clean up any presence rows
     const presenceRows = await ctx.db
       .query("presence")
       .withIndex("by_profile", (q) => q.eq("profileId", id))

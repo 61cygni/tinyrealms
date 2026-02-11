@@ -19,6 +19,8 @@ export class MapRenderer {
   private labelOverlay: Container;
   private collisionOverlay: Graphics | null = null;
   private collisionOverlayVisible = false;
+  /** Runtime collision overrides (e.g. open doors). Key = "tileX,tileY" */
+  private collisionOverrides = new Map<string, boolean>();
   private overlaysVisible = false;
   private tileAnimator: TileAnimator | null = null;
 
@@ -195,7 +197,27 @@ export class MapRenderer {
     ) {
       return true;
     }
+    // Check runtime overrides first (e.g. doors)
+    const key = `${tileX},${tileY}`;
+    if (this.collisionOverrides.has(key)) {
+      return this.collisionOverrides.get(key)!;
+    }
     return this.mapData.collisionMask[tileY * this.mapData.width + tileX];
+  }
+
+  /** Set a runtime collision override for a tile (used by doors) */
+  setCollisionOverride(tileX: number, tileY: number, blocked: boolean) {
+    this.collisionOverrides.set(`${tileX},${tileY}`, blocked);
+  }
+
+  /** Remove a runtime collision override (reverts to base collision mask) */
+  clearCollisionOverride(tileX: number, tileY: number) {
+    this.collisionOverrides.delete(`${tileX},${tileY}`);
+  }
+
+  /** Remove all runtime collision overrides */
+  clearAllCollisionOverrides() {
+    this.collisionOverrides.clear();
   }
 
   /** Convert world position to tile coordinates */
@@ -554,6 +576,54 @@ export class MapRenderer {
           s.y = dy * th;
           this.tileGhostContainer.addChild(s);
         }
+      }
+      (this.tileGhostContainer as any).__regionKey = key;
+    }
+
+    this.tileGhostContainer.x = tx * tw;
+    this.tileGhostContainer.y = ty * th;
+    this.tileGhostContainer.visible = true;
+  }
+
+  /**
+   * Show an irregular (non-rectangular) tile ghost preview.
+   * @param tx       Map tile X for the bounding-box origin
+   * @param ty       Map tile Y
+   * @param tiles    Array of {dx, dy, tileIdx} offsets from the origin
+   * @param tsCols   Number of tile columns in the tileset
+   */
+  showIrregularTileGhost(
+    tx: number,
+    ty: number,
+    tiles: { dx: number; dy: number; tileIdx: number }[],
+    tsCols: number,
+  ) {
+    if (!this.mapData || !this.tilesetTexture) return;
+    const tw = this.mapData.tileWidth;
+    const th = this.mapData.tileHeight;
+
+    if (this.tileCursorOutline) this.tileCursorOutline.visible = false;
+
+    if (!this.tileGhostContainer) {
+      this.tileGhostContainer = new Container();
+      this.tileGhostContainer.alpha = 0.55;
+      this.tileGhostContainer.zIndex = 155;
+      this.container.addChild(this.tileGhostContainer);
+    }
+
+    // Build a cache key from the tile set
+    const key = "irr:" + tiles.map((t) => `${t.dx},${t.dy},${t.tileIdx}`).join(";");
+    if ((this.tileGhostContainer as any).__regionKey !== key) {
+      this.tileGhostContainer.removeChildren();
+      for (const t of tiles) {
+        const srcX = (t.tileIdx % tsCols) * tw;
+        const srcY = Math.floor(t.tileIdx / tsCols) * th;
+        const frame = new Rectangle(srcX, srcY, tw, th);
+        const tex = new Texture({ source: this.tilesetTexture!.source, frame });
+        const s = new Sprite(tex);
+        s.x = t.dx * tw;
+        s.y = t.dy * th;
+        this.tileGhostContainer.addChild(s);
       }
       (this.tileGhostContainer as any).__regionKey = key;
     }
