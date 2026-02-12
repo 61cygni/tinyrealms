@@ -1,19 +1,22 @@
 /**
- * NPC Editor — browse NPC *instances* (placed map objects with category "npc"),
- * assign unique names, and edit backstory, personality, stats, items,
- * relationships, and other profile data used for LLM feeding.
+ * NPC Editor — two tabs:
  *
- * Same sprite can be used for many NPCs — each placed instance gets its own
- * identity via npcProfiles, keyed by a unique instance name.
+ *  1) "NPC Sprites" — create/edit NPC sprite definitions
+ *     (sheet picker, animation preview, NPC-specific fields, save to Convex)
+ *
+ *  2) "NPC Instances" — browse placed NPC instances on maps,
+ *     assign unique names, and edit backstory, personality, stats, items,
+ *     relationships, and other profile data used for LLM feeding.
  */
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { Game } from "../engine/Game.ts";
 import type { Id } from "../../convex/_generated/dataModel";
+import { NPC_SPRITE_SHEETS, SOUND_FILES } from "../sprited/SpriteEditorPanel.ts";
 import "./NpcEditor.css";
 
 // ---------------------------------------------------------------------------
-// Types
+// Types — NPC instances & profiles
 // ---------------------------------------------------------------------------
 
 interface NpcInstance {
@@ -66,6 +69,7 @@ interface NpcProfileData {
   stats?: NpcStats;
   items?: { name: string; quantity: number }[];
   tags?: string[];
+  visibilityType?: "public" | "private" | "system";
 }
 
 const DEFAULT_STATS: NpcStats = {
@@ -73,22 +77,84 @@ const DEFAULT_STATS: NpcStats = {
 };
 
 // ---------------------------------------------------------------------------
+// Types — Sprite sheets
+// ---------------------------------------------------------------------------
+
+interface SheetJson {
+  frames: Record<string, { frame: { x: number; y: number; w: number; h: number } }>;
+  animations?: Record<string, string[]>;
+  meta: { image: string; format: string; scale: string };
+}
+
+interface LoadedSheet {
+  jsonUrl: string;
+  json: SheetJson;
+  image: HTMLImageElement;
+  animations: Record<string, { x: number; y: number; w: number; h: number }[]>;
+  frameWidth: number;
+  frameHeight: number;
+}
+
+interface SavedNpcDef {
+  _id: string;
+  name: string;
+  spriteSheetUrl: string;
+  defaultAnimation: string;
+  animationSpeed: number;
+  anchorX: number;
+  anchorY: number;
+  scale: number;
+  isCollidable: boolean;
+  category: string;
+  frameWidth: number;
+  frameHeight: number;
+  npcSpeed?: number;
+  npcWanderRadius?: number;
+  npcDirDown?: string;
+  npcDirUp?: string;
+  npcDirLeft?: string;
+  npcDirRight?: string;
+  npcGreeting?: string;
+  ambientSoundUrl?: string;
+  ambientSoundRadius?: number;
+  ambientSoundVolume?: number;
+  interactSoundUrl?: string;
+  visibilityType?: "public" | "private" | "system";
+}
+
+function visibilityLabel(v?: "public" | "private" | "system"): string {
+  const type = v ?? "system";
+  if (type === "private") return "private";
+  if (type === "public") return "public";
+  return "system";
+}
+
+// ---------------------------------------------------------------------------
 // Panel
 // ---------------------------------------------------------------------------
+
+type TabId = "sprites" | "instances";
 
 export class NpcEditorPanel {
   readonly el: HTMLElement;
   private game: Game | null = null;
 
-  // Data
+  // Tab state
+  private activeTab: TabId = "instances";
+  private spritesContent!: HTMLElement;
+  private instancesContent!: HTMLElement;
+  private tabBtnSprites!: HTMLButtonElement;
+  private tabBtnInstances!: HTMLButtonElement;
+
+  // ---- NPC Instances tab (existing) ----
   private instances: NpcInstance[] = [];
   private selected: NpcInstance | null = null;
   private currentProfile: NpcProfileData | null = null;
 
-  // DOM — sidebar
+  // Instance sidebar
   private listEl!: HTMLElement;
 
-  // DOM — main area
+  // Instance main area
   private mainEl!: HTMLElement;
   private headerEl!: HTMLElement;
   private headerSprite!: HTMLElement;
@@ -97,7 +163,7 @@ export class NpcEditorPanel {
   private bodyEl!: HTMLElement;
   private statusEl!: HTMLElement;
 
-  // Form inputs
+  // Instance form inputs
   private instanceNameInput!: HTMLInputElement;
   private displayNameInput!: HTMLInputElement;
   private titleInput!: HTMLInputElement;
@@ -105,12 +171,13 @@ export class NpcEditorPanel {
   private personalityArea!: HTMLTextAreaElement;
   private dialogueStyleInput!: HTMLInputElement;
   private factionInput!: HTMLInputElement;
+  private visibilitySelect!: HTMLSelectElement;
   private knowledgeArea!: HTMLTextAreaElement;
   private secretsArea!: HTMLTextAreaElement;
   private systemPromptArea!: HTMLTextAreaElement;
   private statInputs: Record<string, HTMLInputElement> = {};
 
-  // Dynamic lists
+  // Instance dynamic lists
   private itemsList!: HTMLElement;
   private itemsAddRow!: HTMLElement;
   private tagsList!: HTMLElement;
@@ -118,35 +185,742 @@ export class NpcEditorPanel {
   private relList!: HTMLElement;
   private relAddRow!: HTMLElement;
 
-  // Sprite cache
+  // Sprite thumb cache
   private spriteCache: Map<string, { img: HTMLImageElement; frame: { x: number; y: number; w: number; h: number } }> = new Map();
+
+  // ---- NPC Sprites tab (new) ----
+  private nsLoadedSheet: LoadedSheet | null = null;
+  private nsSelectedAnim = "";
+  private nsPreviewFrame = 0;
+  private nsPreviewTimer = 0;
+  private nsSavedDefs: SavedNpcDef[] = [];
+  private nsEditingDef: SavedNpcDef | null = null;
+
+  // Sprite editor DOM
+  private nsSheetSelect!: HTMLSelectElement;
+  private nsSheetCanvas!: HTMLCanvasElement;
+  private nsSheetCtx!: CanvasRenderingContext2D;
+  private nsAnimList!: HTMLElement;
+  private nsPreviewCanvas!: HTMLCanvasElement;
+  private nsPreviewCtx!: CanvasRenderingContext2D;
+  private nsPreviewLabel!: HTMLElement;
+
+  // Sprite form
+  private nsNameInput!: HTMLInputElement;
+  private nsSpeedInput!: HTMLInputElement;
+  private nsScaleInput!: HTMLInputElement;
+  private nsAnchorXInput!: HTMLInputElement;
+  private nsAnchorYInput!: HTMLInputElement;
+  private nsCollidableCheck!: HTMLInputElement;
+  private nsVisibilitySelect!: HTMLSelectElement;
+  private nsNpcSpeedInput!: HTMLInputElement;
+  private nsNpcWanderInput!: HTMLInputElement;
+  private nsNpcDirDownInput!: HTMLInputElement;
+  private nsNpcDirUpInput!: HTMLInputElement;
+  private nsNpcDirLeftInput!: HTMLInputElement;
+  private nsNpcDirRightInput!: HTMLInputElement;
+  private nsNpcGreetingInput!: HTMLTextAreaElement;
+  private nsAmbientSoundSelect!: HTMLSelectElement;
+  private nsAmbientRadiusInput!: HTMLInputElement;
+  private nsAmbientVolumeInput!: HTMLInputElement;
+  private nsInteractSoundSelect!: HTMLSelectElement;
+  private nsSaveBtn!: HTMLButtonElement;
+  private nsDeleteBtn!: HTMLButtonElement;
+  private nsStatusEl!: HTMLElement;
+  private nsSavedListEl!: HTMLElement;
 
   constructor() {
     this.el = document.createElement("div");
     this.el.className = "npc-editor";
     this.el.style.display = "none";
 
-    this.el.appendChild(this.buildSidebar());
-    this.el.appendChild(this.buildMain());
+    // Tab bar
+    this.el.appendChild(this.buildTabBar());
+
+    // Sprites tab content
+    this.spritesContent = this.buildSpritesContent();
+    this.el.appendChild(this.spritesContent);
+
+    // Instances tab content (wraps the existing sidebar + main)
+    this.instancesContent = document.createElement("div");
+    this.instancesContent.className = "npc-editor-instances-content";
+    this.instancesContent.appendChild(this.buildSidebar());
+    this.instancesContent.appendChild(this.buildMain());
+    this.el.appendChild(this.instancesContent);
+
+    this.switchTab("instances");
   }
 
   // =========================================================================
   // Public API
   // =========================================================================
 
-  setGame(game: Game) { this.game = game; }
+  setGame(game: Game) {
+    this.game = game;
+    this.nsRebuildVisibilityOptions(this.nsVisibilitySelect?.value as any || "private");
+    this.rebuildVisibilitySelect(this.visibilitySelect?.value as any || "private");
+  }
 
   toggle(visible: boolean) {
     this.el.style.display = visible ? "" : "none";
-    if (visible) this.loadData();
+    if (visible) {
+      if (this.activeTab === "instances") this.loadData();
+      else this.nsLoadSavedDefs();
+    } else {
+      if (this.nsPreviewTimer) { clearInterval(this.nsPreviewTimer); this.nsPreviewTimer = 0; }
+    }
   }
 
   show() { this.toggle(true); }
   hide() { this.toggle(false); }
-  destroy() { this.el.remove(); }
+  destroy() {
+    if (this.nsPreviewTimer) clearInterval(this.nsPreviewTimer);
+    this.el.remove();
+  }
 
   // =========================================================================
-  // BUILD: Sidebar
+  // TAB BAR
+  // =========================================================================
+
+  private buildTabBar(): HTMLElement {
+    const bar = document.createElement("div");
+    bar.className = "npc-editor-tab-bar";
+
+    this.tabBtnSprites = document.createElement("button");
+    this.tabBtnSprites.className = "npc-editor-tab";
+    this.tabBtnSprites.textContent = "NPC Sprites";
+    this.tabBtnSprites.addEventListener("click", () => this.switchTab("sprites"));
+
+    this.tabBtnInstances = document.createElement("button");
+    this.tabBtnInstances.className = "npc-editor-tab";
+    this.tabBtnInstances.textContent = "NPC Instances";
+    this.tabBtnInstances.addEventListener("click", () => this.switchTab("instances"));
+
+    bar.append(this.tabBtnSprites, this.tabBtnInstances);
+    return bar;
+  }
+
+  private switchTab(tab: TabId) {
+    this.activeTab = tab;
+
+    this.tabBtnSprites.classList.toggle("active", tab === "sprites");
+    this.tabBtnInstances.classList.toggle("active", tab === "instances");
+
+    this.spritesContent.style.display = tab === "sprites" ? "" : "none";
+    this.instancesContent.style.display = tab === "instances" ? "" : "none";
+
+    if (tab === "instances") this.loadData();
+    else this.nsLoadSavedDefs();
+  }
+
+  // #########################################################################
+  //
+  //  TAB 1: NPC SPRITES — Create / Edit NPC sprite definitions
+  //
+  // #########################################################################
+
+  private buildSpritesContent(): HTMLElement {
+    const wrap = document.createElement("div");
+    wrap.className = "npc-editor-sprites-content";
+
+    wrap.appendChild(this.buildNsSidebar());
+    wrap.appendChild(this.buildNsCenter());
+    wrap.appendChild(this.buildNsDefPanel());
+    return wrap;
+  }
+
+  // ---- Sidebar: sheet picker + anim list ----
+
+  private buildNsSidebar(): HTMLElement {
+    const sidebar = document.createElement("div");
+    sidebar.className = "sprite-editor-sidebar";
+
+    const title = document.createElement("h3");
+    title.className = "sprite-editor-title";
+    title.textContent = "Sprite Sheets";
+    sidebar.appendChild(title);
+
+    this.nsSheetSelect = document.createElement("select");
+    this.nsSheetSelect.className = "sprite-editor-select";
+    const ph = document.createElement("option");
+    ph.value = "";
+    ph.textContent = "— Select a sheet —";
+    this.nsSheetSelect.appendChild(ph);
+    for (const s of NPC_SPRITE_SHEETS) {
+      const opt = document.createElement("option");
+      opt.value = s.jsonUrl;
+      opt.textContent = s.name;
+      this.nsSheetSelect.appendChild(opt);
+    }
+    this.nsSheetSelect.addEventListener("change", () => this.nsOnSheetSelect());
+    sidebar.appendChild(this.nsSheetSelect);
+
+    const animLabel = document.createElement("div");
+    animLabel.className = "sprite-editor-section-label";
+    animLabel.textContent = "Animations";
+    sidebar.appendChild(animLabel);
+
+    this.nsAnimList = document.createElement("div");
+    this.nsAnimList.className = "sprite-editor-anim-list";
+    sidebar.appendChild(this.nsAnimList);
+
+    return sidebar;
+  }
+
+  // ---- Center: sheet canvas + preview ----
+
+  private buildNsCenter(): HTMLElement {
+    const center = document.createElement("div");
+    center.className = "sprite-editor-center";
+
+    const sheetWrap = document.createElement("div");
+    sheetWrap.className = "sprite-editor-sheet-wrap";
+    this.nsSheetCanvas = document.createElement("canvas");
+    this.nsSheetCanvas.className = "sprite-editor-sheet-canvas";
+    this.nsSheetCtx = this.nsSheetCanvas.getContext("2d")!;
+    this.nsSheetCtx.imageSmoothingEnabled = false;
+    sheetWrap.appendChild(this.nsSheetCanvas);
+    center.appendChild(sheetWrap);
+
+    const previewWrap = document.createElement("div");
+    previewWrap.className = "sprite-editor-preview-wrap";
+    this.nsPreviewLabel = document.createElement("div");
+    this.nsPreviewLabel.className = "sprite-editor-preview-label";
+    this.nsPreviewLabel.textContent = "Preview";
+    previewWrap.appendChild(this.nsPreviewLabel);
+
+    this.nsPreviewCanvas = document.createElement("canvas");
+    this.nsPreviewCanvas.className = "sprite-editor-preview-canvas";
+    this.nsPreviewCanvas.width = 128;
+    this.nsPreviewCanvas.height = 128;
+    this.nsPreviewCtx = this.nsPreviewCanvas.getContext("2d")!;
+    this.nsPreviewCtx.imageSmoothingEnabled = false;
+    previewWrap.appendChild(this.nsPreviewCanvas);
+    center.appendChild(previewWrap);
+
+    return center;
+  }
+
+  // ---- Right panel: definition form + saved NPC list ----
+
+  private buildNsDefPanel(): HTMLElement {
+    const panel = document.createElement("div");
+    panel.className = "sprite-editor-defpanel";
+
+    const title = document.createElement("h3");
+    title.className = "sprite-editor-title";
+    title.textContent = "NPC Sprite Definitions";
+    panel.appendChild(title);
+
+    // Saved NPC sprites list (before form so it's visible without scrolling)
+    const savedLabel = document.createElement("div");
+    savedLabel.className = "sprite-editor-section-label";
+    savedLabel.textContent = "Saved NPC Sprites";
+    panel.appendChild(savedLabel);
+
+    this.nsSavedListEl = document.createElement("div");
+    this.nsSavedListEl.className = "sprite-editor-saved-list";
+    panel.appendChild(this.nsSavedListEl);
+
+    // Form
+    const form = document.createElement("div");
+    form.className = "sprite-editor-form";
+
+    this.nsNameInput = this.nsAddFormField(form, "Name", "text", "My NPC") as HTMLInputElement;
+    this.nsSpeedInput = this.nsAddFormField(form, "Anim Speed", "number", "0.15") as HTMLInputElement;
+    this.nsScaleInput = this.nsAddFormField(form, "Scale", "number", "1") as HTMLInputElement;
+    this.nsAnchorXInput = this.nsAddFormField(form, "Anchor X (0–1)", "number", "0.5") as HTMLInputElement;
+    this.nsAnchorYInput = this.nsAddFormField(form, "Anchor Y (0–1)", "number", "1") as HTMLInputElement;
+
+    // Collidable checkbox
+    const colField = document.createElement("div");
+    colField.className = "sprite-editor-field sprite-editor-field-row";
+    this.nsCollidableCheck = document.createElement("input");
+    this.nsCollidableCheck.type = "checkbox";
+    this.nsCollidableCheck.id = "ns-collidable-check";
+    const colLabel = document.createElement("label");
+    colLabel.htmlFor = "ns-collidable-check";
+    colLabel.textContent = "Collidable";
+    colField.append(this.nsCollidableCheck, colLabel);
+    form.appendChild(colField);
+
+    // Visibility scope
+    const visField = document.createElement("div");
+    visField.className = "sprite-editor-field";
+    const visLabel = document.createElement("label");
+    visLabel.textContent = "Visibility";
+    this.nsVisibilitySelect = document.createElement("select");
+    this.nsVisibilitySelect.className = "sprite-editor-select";
+    this.nsRebuildVisibilityOptions();
+    visField.append(visLabel, this.nsVisibilitySelect);
+    form.appendChild(visField);
+
+    // ── NPC Settings (always visible — this IS the NPC editor) ──
+    const npcHeader = document.createElement("div");
+    npcHeader.className = "sprite-editor-section-label";
+    npcHeader.textContent = "NPC Settings";
+    form.appendChild(npcHeader);
+
+    this.nsNpcSpeedInput = this.nsAddFormField(form, "Move Speed (px/sec)", "number", "30") as HTMLInputElement;
+    this.nsNpcWanderInput = this.nsAddFormField(form, "Wander Radius (px)", "number", "60") as HTMLInputElement;
+
+    const dirHeader = document.createElement("div");
+    dirHeader.className = "sprite-editor-section-label";
+    dirHeader.textContent = "Direction → Animation Row";
+    dirHeader.style.marginTop = "4px";
+    form.appendChild(dirHeader);
+
+    this.nsNpcDirDownInput = this.nsAddFormField(form, "Down", "text", "row0") as HTMLInputElement;
+    this.nsNpcDirUpInput = this.nsAddFormField(form, "Up", "text", "row1") as HTMLInputElement;
+    this.nsNpcDirLeftInput = this.nsAddFormField(form, "Left", "text", "row3") as HTMLInputElement;
+    this.nsNpcDirRightInput = this.nsAddFormField(form, "Right", "text", "row2") as HTMLInputElement;
+
+    // Greeting textarea
+    const greetField = document.createElement("div");
+    greetField.className = "sprite-editor-field";
+    const greetLabel = document.createElement("label");
+    greetLabel.textContent = "Greeting";
+    this.nsNpcGreetingInput = document.createElement("textarea");
+    this.nsNpcGreetingInput.className = "sprite-editor-textarea";
+    this.nsNpcGreetingInput.rows = 3;
+    this.nsNpcGreetingInput.placeholder = "Hello there! I don't have much to say yet.";
+    greetField.append(greetLabel, this.nsNpcGreetingInput);
+    form.appendChild(greetField);
+
+    // ── Sounds ──
+    const soundHeader = document.createElement("div");
+    soundHeader.className = "sprite-editor-section-label";
+    soundHeader.textContent = "Sounds";
+    form.appendChild(soundHeader);
+
+    const ambField = document.createElement("div");
+    ambField.className = "sprite-editor-field";
+    const ambLabel = document.createElement("label");
+    ambLabel.textContent = "Ambient Sound (loops)";
+    this.nsAmbientSoundSelect = this.nsBuildSoundSelect();
+    ambField.append(ambLabel, this.nsAmbientSoundSelect);
+    form.appendChild(ambField);
+
+    this.nsAmbientRadiusInput = this.nsAddFormField(form, "Ambient Radius (px)", "number", "200") as HTMLInputElement;
+    this.nsAmbientVolumeInput = this.nsAddFormField(form, "Ambient Volume (0–1)", "number", "0.5") as HTMLInputElement;
+
+    const intField = document.createElement("div");
+    intField.className = "sprite-editor-field";
+    const intLabel = document.createElement("label");
+    intLabel.textContent = "Interact / Greeting Sound";
+    this.nsInteractSoundSelect = this.nsBuildSoundSelect();
+    intField.append(intLabel, this.nsInteractSoundSelect);
+    form.appendChild(intField);
+
+    // ── Buttons ──
+    const btnRow = document.createElement("div");
+    btnRow.className = "sprite-editor-btn-row";
+
+    const newBtn = document.createElement("button");
+    newBtn.className = "sprite-editor-btn";
+    newBtn.textContent = "New";
+    newBtn.addEventListener("click", () => this.nsResetForm());
+    btnRow.appendChild(newBtn);
+
+    this.nsSaveBtn = document.createElement("button");
+    this.nsSaveBtn.className = "sprite-editor-btn accent";
+    this.nsSaveBtn.textContent = "💾 Save";
+    this.nsSaveBtn.addEventListener("click", () => this.nsSaveDef());
+    btnRow.appendChild(this.nsSaveBtn);
+
+    this.nsDeleteBtn = document.createElement("button");
+    this.nsDeleteBtn.className = "sprite-editor-btn danger";
+    this.nsDeleteBtn.textContent = "🗑 Delete";
+    this.nsDeleteBtn.style.display = "none";
+    this.nsDeleteBtn.addEventListener("click", () => this.nsDeleteDef());
+    btnRow.appendChild(this.nsDeleteBtn);
+
+    form.appendChild(btnRow);
+
+    this.nsStatusEl = document.createElement("div");
+    this.nsStatusEl.className = "sprite-editor-status";
+    form.appendChild(this.nsStatusEl);
+
+    panel.appendChild(form);
+    return panel;
+  }
+
+  private nsAddFormField(parent: HTMLElement, labelText: string, type: string, defaultVal: string): HTMLInputElement {
+    const field = document.createElement("div");
+    field.className = "sprite-editor-field";
+    const label = document.createElement("label");
+    label.textContent = labelText;
+    const input = document.createElement("input");
+    input.type = type;
+    input.value = defaultVal;
+    if (type === "number") { input.step = "0.01"; input.min = "0"; }
+    field.append(label, input);
+    parent.appendChild(field);
+    return input;
+  }
+
+  private nsBuildSoundSelect(): HTMLSelectElement {
+    const sel = document.createElement("select");
+    sel.className = "sprite-editor-select";
+    for (const sf of SOUND_FILES) {
+      const opt = document.createElement("option");
+      opt.value = sf.url;
+      opt.textContent = sf.label;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+
+  // ---- Sheet loading ----
+
+  private async nsOnSheetSelect() {
+    const url = this.nsSheetSelect.value;
+    if (!url) return;
+    try {
+      const resp = await fetch(url);
+      const json: SheetJson = await resp.json();
+      const basePath = url.substring(0, url.lastIndexOf("/") + 1);
+      const imagePath = basePath + json.meta.image;
+      const image = await this.nsLoadImage(imagePath);
+
+      const animations: LoadedSheet["animations"] = {};
+      if (json.animations) {
+        for (const [animName, frameNames] of Object.entries(json.animations)) {
+          animations[animName] = frameNames.map((fn) => {
+            const f = json.frames[fn]?.frame;
+            return f ?? { x: 0, y: 0, w: 32, h: 32 };
+          });
+        }
+      } else {
+        animations["default"] = Object.values(json.frames).map((f) => f.frame);
+      }
+
+      const firstFrame = Object.values(json.frames)[0]?.frame;
+      const fw = firstFrame?.w ?? 32;
+      const fh = firstFrame?.h ?? 32;
+
+      this.nsLoadedSheet = { jsonUrl: url, json, image, animations, frameWidth: fw, frameHeight: fh };
+      this.nsRenderSheetCanvas();
+      this.nsRenderAnimList();
+      this.nsSelectAnimation(Object.keys(animations)[0] ?? "");
+    } catch (err) {
+      console.error("Failed to load sprite sheet:", err);
+    }
+  }
+
+  private nsLoadImage(src: string): Promise<HTMLImageElement> {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Failed to load image: " + src));
+      img.src = src;
+    });
+  }
+
+  // ---- Rendering ----
+
+  private nsRenderSheetCanvas() {
+    if (!this.nsLoadedSheet) return;
+    const { image, frameWidth, frameHeight } = this.nsLoadedSheet;
+    const scale = 2;
+    const w = image.width * scale;
+    const h = image.height * scale;
+    this.nsSheetCanvas.width = w;
+    this.nsSheetCanvas.height = h;
+    this.nsSheetCanvas.style.width = w + "px";
+    this.nsSheetCanvas.style.height = h + "px";
+    const ctx = this.nsSheetCtx;
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(image, 0, 0, w, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    const cols = Math.floor(image.width / frameWidth);
+    const rows = Math.floor(image.height / frameHeight);
+    for (let r = 0; r <= rows; r++) { const y = r * frameHeight * scale; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    for (let c = 0; c <= cols; c++) { const x = c * frameWidth * scale; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+  }
+
+  private nsRenderAnimList() {
+    this.nsAnimList.innerHTML = "";
+    if (!this.nsLoadedSheet) return;
+    for (const animName of Object.keys(this.nsLoadedSheet.animations)) {
+      const frames = this.nsLoadedSheet.animations[animName];
+      const btn = document.createElement("button");
+      btn.className = `sprite-editor-anim-btn ${this.nsSelectedAnim === animName ? "active" : ""}`;
+      btn.textContent = `${animName} (${frames.length} frames)`;
+      btn.addEventListener("click", () => this.nsSelectAnimation(animName));
+      this.nsAnimList.appendChild(btn);
+    }
+  }
+
+  private nsSelectAnimation(name: string) {
+    this.nsSelectedAnim = name;
+    this.nsPreviewFrame = 0;
+    this.nsRenderAnimList();
+    this.nsStartPreview();
+  }
+
+  private nsStartPreview() {
+    if (this.nsPreviewTimer) { clearInterval(this.nsPreviewTimer); this.nsPreviewTimer = 0; }
+    if (!this.nsLoadedSheet || !this.nsSelectedAnim) {
+      this.nsPreviewCtx.clearRect(0, 0, 128, 128);
+      this.nsPreviewLabel.textContent = "Preview";
+      return;
+    }
+    const frames = this.nsLoadedSheet.animations[this.nsSelectedAnim];
+    if (!frames || frames.length === 0) return;
+    this.nsPreviewLabel.textContent = `Preview: ${this.nsSelectedAnim}`;
+    const speed = parseFloat(this.nsSpeedInput.value) || 0.15;
+    const intervalMs = Math.max(30, speed * 1000);
+    this.nsDrawPreviewFrame(frames);
+    this.nsPreviewTimer = window.setInterval(() => {
+      this.nsPreviewFrame = (this.nsPreviewFrame + 1) % frames.length;
+      this.nsDrawPreviewFrame(frames);
+    }, intervalMs);
+  }
+
+  private nsDrawPreviewFrame(frames: { x: number; y: number; w: number; h: number }[]) {
+    if (!this.nsLoadedSheet) return;
+    const ctx = this.nsPreviewCtx;
+    const f = frames[this.nsPreviewFrame % frames.length];
+    ctx.clearRect(0, 0, 128, 128);
+    const maxDim = Math.max(f.w, f.h);
+    const scale = Math.floor(128 / maxDim) || 1;
+    const dw = f.w * scale;
+    const dh = f.h * scale;
+    const dx = (128 - dw) / 2;
+    const dy = (128 - dh) / 2;
+    ctx.drawImage(this.nsLoadedSheet.image, f.x, f.y, f.w, f.h, dx, dy, dw, dh);
+  }
+
+  // ---- Form ----
+
+  private nsResetForm() {
+    this.nsEditingDef = null;
+    this.nsNameInput.value = "";
+    this.nsSpeedInput.value = "0.15";
+    this.nsScaleInput.value = "1";
+    this.nsAnchorXInput.value = "0.5";
+    this.nsAnchorYInput.value = "1";
+    this.nsCollidableCheck.checked = false;
+    this.nsRebuildVisibilityOptions("private");
+    this.nsNpcSpeedInput.value = "30";
+    this.nsNpcWanderInput.value = "60";
+    this.nsNpcDirDownInput.value = "row0";
+    this.nsNpcDirUpInput.value = "row1";
+    this.nsNpcDirLeftInput.value = "row3";
+    this.nsNpcDirRightInput.value = "row2";
+    this.nsNpcGreetingInput.value = "";
+    this.nsAmbientSoundSelect.value = "";
+    this.nsAmbientRadiusInput.value = "200";
+    this.nsAmbientVolumeInput.value = "0.5";
+    this.nsInteractSoundSelect.value = "";
+    this.nsDeleteBtn.style.display = "none";
+    this.nsStatusEl.textContent = "";
+  }
+
+  private nsPopulateForm(def: SavedNpcDef) {
+    this.nsEditingDef = def;
+    this.nsNameInput.value = def.name;
+    this.nsSpeedInput.value = String(def.animationSpeed);
+    this.nsScaleInput.value = String(def.scale);
+    this.nsAnchorXInput.value = String(def.anchorX);
+    this.nsAnchorYInput.value = String(def.anchorY);
+    this.nsCollidableCheck.checked = def.isCollidable;
+    this.nsRebuildVisibilityOptions(def.visibilityType ?? "system");
+    this.nsNpcSpeedInput.value = String(def.npcSpeed ?? 30);
+    this.nsNpcWanderInput.value = String(def.npcWanderRadius ?? 60);
+    this.nsNpcDirDownInput.value = def.npcDirDown ?? "row0";
+    this.nsNpcDirUpInput.value = def.npcDirUp ?? "row1";
+    this.nsNpcDirLeftInput.value = def.npcDirLeft ?? "row3";
+    this.nsNpcDirRightInput.value = def.npcDirRight ?? "row2";
+    this.nsNpcGreetingInput.value = def.npcGreeting ?? "";
+    this.nsAmbientSoundSelect.value = def.ambientSoundUrl ?? "";
+    this.nsAmbientRadiusInput.value = String(def.ambientSoundRadius ?? 200);
+    this.nsAmbientVolumeInput.value = String(def.ambientSoundVolume ?? 0.5);
+    this.nsInteractSoundSelect.value = def.interactSoundUrl ?? "";
+    this.nsDeleteBtn.style.display = "";
+
+    // Load the matching sheet & animation
+    this.nsSheetSelect.value = def.spriteSheetUrl;
+    this.nsOnSheetSelect().then(() => {
+      this.nsSelectAnimation(def.defaultAnimation);
+    });
+  }
+
+  // ---- Save / Delete ----
+
+  private async nsSaveDef() {
+    const name = this.nsNameInput.value.trim();
+    if (!name) { this.nsShowStatus("Name is required", true); return; }
+    if (!this.nsLoadedSheet) { this.nsShowStatus("Select a sprite sheet first", true); return; }
+    if (!this.nsSelectedAnim) { this.nsShowStatus("Select an animation first", true); return; }
+
+    this.nsShowStatus("Saving…");
+    try {
+      const convex = getConvexClient();
+      const profileId = this.game?.profile._id as Id<"profiles">;
+
+      await convex.mutation(api.spriteDefinitions.save, {
+        profileId,
+        name,
+        spriteSheetUrl: this.nsLoadedSheet.jsonUrl,
+        defaultAnimation: this.nsSelectedAnim,
+        animationSpeed: parseFloat(this.nsSpeedInput.value) || 0.15,
+        anchorX: parseFloat(this.nsAnchorXInput.value) || 0.5,
+        anchorY: parseFloat(this.nsAnchorYInput.value) || 1,
+        scale: parseFloat(this.nsScaleInput.value) || 1,
+        isCollidable: this.nsCollidableCheck.checked,
+        category: "npc",
+        visibilityType: this.nsVisibilitySelect.value as any,
+        frameWidth: this.nsLoadedSheet.frameWidth,
+        frameHeight: this.nsLoadedSheet.frameHeight,
+        // Sounds
+        ambientSoundUrl: this.nsAmbientSoundSelect.value || undefined,
+        ambientSoundRadius: this.nsAmbientSoundSelect.value ? (parseFloat(this.nsAmbientRadiusInput.value) || 200) : undefined,
+        ambientSoundVolume: this.nsAmbientSoundSelect.value ? (parseFloat(this.nsAmbientVolumeInput.value) || 0.5) : undefined,
+        interactSoundUrl: this.nsInteractSoundSelect.value || undefined,
+        // NPC-specific
+        npcSpeed: parseFloat(this.nsNpcSpeedInput.value) || 30,
+        npcWanderRadius: parseFloat(this.nsNpcWanderInput.value) || 60,
+        npcDirDown: this.nsNpcDirDownInput.value || "row0",
+        npcDirUp: this.nsNpcDirUpInput.value || "row1",
+        npcDirLeft: this.nsNpcDirLeftInput.value || "row3",
+        npcDirRight: this.nsNpcDirRightInput.value || "row2",
+        npcGreeting: this.nsNpcGreetingInput.value || undefined,
+      });
+
+      this.nsShowStatus("Saved ✓");
+
+      // Live-refresh sounds on running entities
+      const soundCfg = {
+        ambientSoundUrl: this.nsAmbientSoundSelect.value || undefined,
+        ambientSoundRadius: this.nsAmbientSoundSelect.value ? (parseFloat(this.nsAmbientRadiusInput.value) || 200) : undefined,
+        ambientSoundVolume: this.nsAmbientSoundSelect.value ? (parseFloat(this.nsAmbientVolumeInput.value) || 0.5) : undefined,
+        interactSoundUrl: this.nsInteractSoundSelect.value || undefined,
+      };
+      if (this.game?.entityLayer) this.game.entityLayer.refreshNPCSounds(name, soundCfg);
+
+      this.nsLoadSavedDefs();
+    } catch (err: any) {
+      console.error("Failed to save NPC sprite definition:", err);
+      const msg = err?.message || "Save failed!";
+      this.nsShowStatus(msg.includes("superuser") ? "Save failed: superuser role required" : `Save failed: ${msg}`, true);
+    }
+  }
+
+  private async nsDeleteDef() {
+    if (!this.nsEditingDef) return;
+    if (!confirm(`Delete NPC sprite "${this.nsEditingDef.name}"?`)) return;
+    try {
+      const convex = getConvexClient();
+      const profileId = this.game?.profile._id as Id<"profiles">;
+      await convex.mutation(api.spriteDefinitions.remove, {
+        profileId,
+        id: this.nsEditingDef._id as Id<"spriteDefinitions">,
+      });
+      this.nsShowStatus("Deleted");
+      this.nsResetForm();
+      this.nsLoadSavedDefs();
+    } catch (err) {
+      console.error("Failed to delete NPC sprite definition:", err);
+      this.nsShowStatus("Delete failed!", true);
+    }
+  }
+
+  private nsShowStatus(text: string, isError = false) {
+    this.nsStatusEl.textContent = text;
+    this.nsStatusEl.style.color = isError ? "#ff4444" : "#88ff88";
+    clearTimeout(this._nsStatusTimer);
+    this._nsStatusTimer = window.setTimeout(() => { this.nsStatusEl.textContent = ""; }, 3000);
+  }
+  private _nsStatusTimer = 0;
+
+  // ---- Saved NPC defs list ----
+
+  private async nsLoadSavedDefs() {
+    this.nsSavedListEl.innerHTML = "";
+    const loading = document.createElement("div");
+    loading.className = "sprite-editor-empty";
+    loading.textContent = "Loading NPC sprites...";
+    this.nsSavedListEl.appendChild(loading);
+
+    try {
+      const convex = getConvexClient();
+      const defs = await convex.query(api.spriteDefinitions.list, {});
+      this.nsSavedDefs = (defs as unknown as SavedNpcDef[]).filter((d) => d.category === "npc");
+      this.nsRenderSavedList();
+    } catch (err) {
+      console.warn("Failed to load NPC sprite definitions:", err);
+      this.nsSavedListEl.innerHTML = "";
+      const errEl = document.createElement("div");
+      errEl.className = "sprite-editor-empty";
+      errEl.textContent = "Failed to load NPC sprites";
+      errEl.style.color = "var(--danger, #e74c3c)";
+      this.nsSavedListEl.appendChild(errEl);
+    }
+  }
+
+  private nsRenderSavedList() {
+    this.nsSavedListEl.innerHTML = "";
+    if (this.nsSavedDefs.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "sprite-editor-empty";
+      empty.textContent = "No NPC sprites yet. Create one below!";
+      this.nsSavedListEl.appendChild(empty);
+      return;
+    }
+    for (const def of this.nsSavedDefs) {
+      const row = document.createElement("div");
+      row.className = "sprite-editor-saved-row";
+      const nameEl = document.createElement("span");
+      nameEl.className = "sprite-editor-saved-name";
+      nameEl.textContent = def.name;
+      const catEl = document.createElement("span");
+      catEl.className = "sprite-editor-saved-cat";
+      catEl.textContent = "npc";
+      const visEl = document.createElement("span");
+      visEl.className = `sprite-editor-saved-vis ${visibilityLabel(def.visibilityType)}`;
+      visEl.textContent = visibilityLabel(def.visibilityType);
+      const editBtn = document.createElement("button");
+      editBtn.className = "sprite-editor-btn small";
+      editBtn.textContent = "Edit";
+      editBtn.addEventListener("click", () => this.nsPopulateForm(def));
+      row.append(nameEl, catEl, visEl, editBtn);
+      this.nsSavedListEl.appendChild(row);
+    }
+  }
+
+  private nsRebuildVisibilityOptions(selected: "public" | "private" | "system" = "private") {
+    if (!this.nsVisibilitySelect) return;
+    const isSuperuser = this.game?.profile.role === "superuser";
+    this.nsVisibilitySelect.innerHTML = "";
+    const options: Array<{ value: "public" | "private" | "system"; label: string }> = [
+      { value: "private", label: "Private (only me)" },
+      { value: "public", label: "Public (all users)" },
+    ];
+    if (isSuperuser) {
+      options.push({ value: "system", label: "System (global built-in)" });
+    }
+    for (const opt of options) {
+      const el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      this.nsVisibilitySelect.appendChild(el);
+    }
+    const canSelect = options.some((o) => o.value === selected);
+    this.nsVisibilitySelect.value = canSelect ? selected : "private";
+  }
+
+  // #########################################################################
+  //
+  //  TAB 2: NPC INSTANCES — Manage placed NPC objects
+  //
+  // #########################################################################
+
+  // =========================================================================
+  // BUILD: Instance Sidebar
   // =========================================================================
 
   private buildSidebar(): HTMLElement {
@@ -155,7 +929,7 @@ export class NpcEditorPanel {
 
     const title = document.createElement("h3");
     title.className = "npc-editor-title";
-    title.textContent = "NPC Editor";
+    title.textContent = "NPC Instances";
     sidebar.appendChild(title);
 
     const label = document.createElement("div");
@@ -171,14 +945,13 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // BUILD: Main area
+  // BUILD: Instance Main area
   // =========================================================================
 
   private buildMain(): HTMLElement {
     this.mainEl = document.createElement("div");
     this.mainEl.className = "npc-editor-main";
 
-    // Header
     this.headerEl = document.createElement("div");
     this.headerEl.className = "npc-editor-header";
     this.headerEl.style.display = "none";
@@ -229,12 +1002,12 @@ export class NpcEditorPanel {
     empty.className = "npc-editor-empty-state";
     empty.innerHTML = `<div class="npc-editor-empty-icon">\u{1F9D9}</div>
       <div>Select an NPC instance from the list</div>
-      <div style="font-size:12px;color:var(--text-muted)">NPCs appear here after being placed on a map using the<br>Object tool in Build mode. Each instance gets a unique name.</div>`;
+      <div style="font-size:12px;color:var(--text-muted)">NPCs appear here after being placed on a map using the<br>NPC tool in Build mode.</div>`;
     this.bodyEl.appendChild(empty);
   }
 
   // =========================================================================
-  // BUILD: Form
+  // BUILD: Instance Form
   // =========================================================================
 
   private buildForm() {
@@ -245,13 +1018,12 @@ export class NpcEditorPanel {
     const rightCol = document.createElement("div");
     rightCol.className = "npc-editor-col";
 
-    // ---- Left: Identity + Narrative + Knowledge ----
-
     const identitySec = this.makeSection("Identity");
     this.instanceNameInput = this.addTextField(identitySec, "Instance Name (unique ID)", "e.g. elara-herbalist");
     this.displayNameInput = this.addTextField(identitySec, "Display Name", "e.g. Elara the Herbalist");
     this.titleInput = this.addTextField(identitySec, "Title / Role", "e.g. Village Herbalist");
     this.factionInput = this.addTextField(identitySec, "Faction / Affiliation", "e.g. Forest Druids");
+    this.visibilitySelect = this.addSelect(identitySec, "Visibility", this.getVisibilityOptions());
 
     const tagsLabel = document.createElement("label");
     tagsLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
@@ -273,8 +1045,6 @@ export class NpcEditorPanel {
     this.knowledgeArea = this.addTextArea(knowledgeSec, "Knowledge", "What this NPC knows about the world\u2026", 3);
     this.secretsArea = this.addTextArea(knowledgeSec, "Secrets", "What they hide from players\u2026", 3);
     leftCol.appendChild(knowledgeSec);
-
-    // ---- Right: Stats + Items + Relationships + System Prompt ----
 
     const statsSec = this.makeSection("Stats");
     const statsGrid = document.createElement("div");
@@ -314,7 +1084,7 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // Helpers: form builders
+  // Helpers: Instance form builders
   // =========================================================================
 
   private makeSection(title: string): HTMLElement {
@@ -365,6 +1135,53 @@ export class NpcEditorPanel {
     field.append(lbl, input);
     parent.appendChild(field);
     return input;
+  }
+
+  private addSelect(
+    parent: HTMLElement,
+    label: string,
+    options: Array<{ value: string; label: string }>,
+  ): HTMLSelectElement {
+    const field = document.createElement("div");
+    field.className = "npc-editor-field";
+    const lbl = document.createElement("label");
+    lbl.textContent = label;
+    const sel = document.createElement("select");
+    for (const opt of options) {
+      const o = document.createElement("option");
+      o.value = opt.value;
+      o.textContent = opt.label;
+      sel.appendChild(o);
+    }
+    field.append(lbl, sel);
+    parent.appendChild(field);
+    return sel;
+  }
+
+  private getVisibilityOptions(): Array<{ value: "private" | "public" | "system"; label: string }> {
+    const isSuperuser = this.game?.profile.role === "superuser";
+    const options: Array<{ value: "private" | "public" | "system"; label: string }> = [
+      { value: "private", label: "Private (only me)" },
+      { value: "public", label: "Public (all users)" },
+    ];
+    if (isSuperuser) {
+      options.push({ value: "system", label: "System (global built-in)" });
+    }
+    return options;
+  }
+
+  private rebuildVisibilitySelect(selected: "private" | "public" | "system" = "private") {
+    if (!this.visibilitySelect) return;
+    const options = this.getVisibilityOptions();
+    this.visibilitySelect.innerHTML = "";
+    for (const opt of options) {
+      const el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      this.visibilitySelect.appendChild(el);
+    }
+    const canSelect = options.some((o) => o.value === selected);
+    this.visibilitySelect.value = canSelect ? selected : "private";
   }
 
   // =========================================================================
@@ -557,12 +1374,11 @@ export class NpcEditorPanel {
     if (this.instances.length === 0) {
       const empty = document.createElement("div");
       empty.className = "npc-editor-empty";
-      empty.textContent = "No NPC instances found. Place NPC sprites on maps using the Object tool in Build mode.";
+      empty.textContent = "No NPC instances found. Place NPC sprites on maps using the NPC tool in Build mode.";
       this.listEl.appendChild(empty);
       return;
     }
 
-    // Group by map
     const byMap = new Map<string, NpcInstance[]>();
     for (const inst of this.instances) {
       const list = byMap.get(inst.mapName) ?? [];
@@ -596,6 +1412,13 @@ export class NpcEditorPanel {
         subEl.className = "npc-editor-list-sub";
         if (inst.instanceName) {
           subEl.textContent = inst.profile?.title || inst.instanceName;
+          if (inst.profile) {
+            const vis = visibilityLabel(inst.profile.visibilityType);
+            const visTag = document.createElement("span");
+            visTag.className = `npc-editor-vis-tag ${vis}`;
+            visTag.textContent = vis;
+            subEl.appendChild(visTag);
+          }
         } else {
           subEl.textContent = "\u26A0 No name assigned";
           subEl.style.color = "var(--warning)";
@@ -617,14 +1440,12 @@ export class NpcEditorPanel {
     this.selected = inst;
 
     if (inst.profile) {
-      // Deep copy
       this.currentProfile = { ...inst.profile };
       if (inst.profile.relationships) this.currentProfile.relationships = [...inst.profile.relationships];
       if (inst.profile.items) this.currentProfile.items = [...inst.profile.items];
       if (inst.profile.tags) this.currentProfile.tags = [...inst.profile.tags];
       if (inst.profile.stats) this.currentProfile.stats = { ...inst.profile.stats };
     } else {
-      // New profile — derive name from spriteDefName + position
       const defaultName = inst.instanceName || "";
       this.currentProfile = {
         name: defaultName,
@@ -638,7 +1459,6 @@ export class NpcEditorPanel {
       };
     }
 
-    // Header
     this.headerEl.style.display = "";
     this.headerName.textContent = this.currentProfile.displayName;
     this.headerDef.textContent = `${inst.spriteDefName} on ${inst.mapName} (${Math.round(inst.x)}, ${Math.round(inst.y)})`;
@@ -652,7 +1472,7 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // POPULATE / COLLECT form
+  // POPULATE / COLLECT instance form
   // =========================================================================
 
   private populateForm() {
@@ -663,6 +1483,7 @@ export class NpcEditorPanel {
     this.displayNameInput.value = p.displayName;
     this.titleInput.value = p.title ?? "";
     this.factionInput.value = p.faction ?? "";
+    this.rebuildVisibilitySelect(p.visibilityType ?? (p._id ? "system" : "private"));
     this.backstoryArea.value = p.backstory ?? "";
     this.personalityArea.value = p.personality ?? "";
     this.dialogueStyleInput.value = p.dialogueStyle ?? "";
@@ -688,6 +1509,7 @@ export class NpcEditorPanel {
     p.displayName = this.displayNameInput.value.trim() || this.selected.spriteDefName;
     p.title = this.titleInput.value.trim() || undefined;
     p.faction = this.factionInput.value.trim() || undefined;
+    p.visibilityType = this.visibilitySelect.value as any;
     p.backstory = this.backstoryArea.value.trim() || undefined;
     p.personality = this.personalityArea.value.trim() || undefined;
     p.dialogueStyle = this.dialogueStyleInput.value.trim() || undefined;
@@ -710,7 +1532,7 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // SAVE
+  // SAVE instance profile
   // =========================================================================
 
   private async save() {
@@ -731,7 +1553,6 @@ export class NpcEditorPanel {
       this.statusEl.textContent = "Saving\u2026";
       this.statusEl.style.color = "var(--text-muted)";
 
-      // 1) Assign instance name on the mapObject (if changed or new)
       if (profile.name !== this.selected.instanceName) {
         await convex.mutation(api.npcProfiles.assignInstanceName, {
           profileId: adminId,
@@ -741,7 +1562,6 @@ export class NpcEditorPanel {
         this.selected.instanceName = profile.name;
       }
 
-      // 2) Save the NPC profile
       await convex.mutation(api.npcProfiles.save, {
         profileId: adminId,
         name: profile.name,
@@ -760,18 +1580,16 @@ export class NpcEditorPanel {
         stats: profile.stats,
         items: profile.items?.length ? profile.items : undefined,
         tags: profile.tags?.length ? profile.tags : undefined,
+        visibilityType: profile.visibilityType,
       });
 
-      // Update local state
       this.selected.profile = { ...profile };
 
       this.statusEl.textContent = "Saved!";
       this.statusEl.style.color = "var(--success)";
       this.headerName.textContent = profile.displayName;
 
-      // Refresh list to show updated names
       await this.loadData();
-      // Re-select (loadData clears selection visually)
       const refreshed = this.instances.find((i) => i.mapObjectId === this.selected?.mapObjectId);
       if (refreshed) {
         this.selected = refreshed;
@@ -789,7 +1607,7 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // DELETE
+  // DELETE instance profile
   // =========================================================================
 
   private async deleteProfile() {
@@ -812,7 +1630,7 @@ export class NpcEditorPanel {
   }
 
   // =========================================================================
-  // SPRITE: Render thumbnail
+  // SPRITE: Render thumbnail (instances tab)
   // =========================================================================
 
   private async renderSpriteThumb(container: HTMLElement, def: { spriteSheetUrl: string; frameWidth: number; frameHeight: number }, size = 28) {

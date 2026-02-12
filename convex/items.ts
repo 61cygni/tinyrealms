@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { requireSuperuser } from "./lib/requireSuperuser";
+import { getAuthUserId } from "@convex-dev/auth/server";
 
 // ---------------------------------------------------------------------------
 // Item type / rarity validators (must match schema)
@@ -44,6 +44,32 @@ const effectValidator = v.object({
   description: v.optional(v.string()),
 });
 
+const visibilityTypeValidator = v.union(
+  v.literal("public"),
+  v.literal("private"),
+  v.literal("system"),
+);
+
+function getVisibilityType(item: any): "public" | "private" | "system" {
+  return (item.visibilityType ?? "system") as "public" | "private" | "system";
+}
+
+function canReadItem(item: any, userId: string | null): boolean {
+  const visibility = getVisibilityType(item);
+  if (visibility === "system" || visibility === "public") return true;
+  if (!userId) return false;
+  return item.createdByUser === userId;
+}
+
+async function isSuperuserUser(ctx: any, userId: string | null): Promise<boolean> {
+  if (!userId) return false;
+  const profiles = await ctx.db
+    .query("profiles")
+    .withIndex("by_user", (q: any) => q.eq("userId", userId))
+    .collect();
+  return profiles.some((p: any) => p.role === "superuser");
+}
+
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
@@ -52,7 +78,11 @@ const effectValidator = v.object({
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    return await ctx.db.query("itemDefs").collect();
+    const userId = await getAuthUserId(ctx);
+    const superuser = await isSuperuserUser(ctx, userId);
+    const all = await ctx.db.query("itemDefs").collect();
+    if (superuser) return all;
+    return all.filter((item) => canReadItem(item, userId));
   },
 });
 
@@ -60,10 +90,16 @@ export const list = query({
 export const getByName = query({
   args: { name: v.string() },
   handler: async (ctx, { name }) => {
-    return await ctx.db
+    const userId = await getAuthUserId(ctx);
+    const superuser = await isSuperuserUser(ctx, userId);
+    const item = await ctx.db
       .query("itemDefs")
       .withIndex("by_name", (q) => q.eq("name", name))
       .first();
+    if (!item) return null;
+    if (superuser) return item;
+    if (!canReadItem(item, userId)) return null;
+    return item;
   },
 });
 
@@ -71,7 +107,7 @@ export const getByName = query({
 // Mutations
 // ---------------------------------------------------------------------------
 
-/** Save (upsert) an item definition. Requires admin. */
+/** Save (upsert) an item definition with visibility scoping. */
 export const save = mutation({
   args: {
     profileId: v.id("profiles"),
@@ -97,17 +133,49 @@ export const save = mutation({
     tags: v.optional(v.array(v.string())),
     lore: v.optional(v.string()),
     pickupSoundUrl: v.optional(v.string()),
+    visibilityType: v.optional(visibilityTypeValidator),
   },
   handler: async (ctx, args) => {
-    await requireSuperuser(ctx, args.profileId);
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const profile = await ctx.db.get(args.profileId);
+    if (!profile) throw new Error("Profile not found");
+    if (profile.userId !== userId) throw new Error("Not your profile");
+    const isSuperuser = (profile as any).role === "superuser";
 
     const existing = await ctx.db
       .query("itemDefs")
       .withIndex("by_name", (q) => q.eq("name", args.name))
       .first();
 
-    const { profileId: _, ...fields } = args;
-    const data = { ...fields, updatedAt: Date.now(), createdBy: args.profileId };
+    if (existing) {
+      const existingOwner = (existing as any).createdByUser;
+      const existingVisibility = getVisibilityType(existing);
+      const isOwner = existingOwner === userId;
+      if (!isSuperuser && !isOwner) {
+        throw new Error(
+          `Permission denied: you can only edit your own item definitions (or be superuser).`,
+        );
+      }
+      if (!isSuperuser && existingVisibility === "system") {
+        throw new Error(`Permission denied: only superusers can edit system item definitions.`);
+      }
+    }
+
+    let visibilityType = args.visibilityType ?? (existing ? getVisibilityType(existing) : "private");
+    if (visibilityType === "system" && !isSuperuser) {
+      throw new Error(`Only superusers can set item visibility to "system".`);
+    }
+
+    const { profileId: _, visibilityType: __, ...fields } = args;
+    const data = {
+      ...fields,
+      visibilityType,
+      createdBy: args.profileId,
+      createdByUser: existing?.createdByUser ?? userId,
+      updatedAt: Date.now(),
+    };
 
     if (existing) {
       await ctx.db.patch(existing._id, data);
@@ -118,14 +186,30 @@ export const save = mutation({
   },
 });
 
-/** Delete an item definition. Requires admin. */
+/** Delete an item definition. Requires owner or superuser. */
 export const remove = mutation({
   args: {
     profileId: v.id("profiles"),
     id: v.id("itemDefs"),
   },
   handler: async (ctx, { profileId, id }) => {
-    await requireSuperuser(ctx, profileId);
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    const profile = await ctx.db.get(profileId);
+    if (!profile) throw new Error("Profile not found");
+    if (profile.userId !== userId) throw new Error("Not your profile");
+    const isSuperuser = (profile as any).role === "superuser";
+
+    const item = await ctx.db.get(id);
+    if (!item) throw new Error("Item definition not found");
+    const visibility = getVisibilityType(item);
+    const isOwner = (item as any).createdByUser === userId;
+    if (!isSuperuser && !isOwner) {
+      throw new Error(`Permission denied: only owner or superuser can delete this item definition.`);
+    }
+    if (!isSuperuser && visibility === "system") {
+      throw new Error(`Permission denied: only superusers can delete system item definitions.`);
+    }
     await ctx.db.delete(id);
   },
 });

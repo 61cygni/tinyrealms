@@ -834,22 +834,99 @@ const MOVED_NPC_FILES = [
 ];
 
 export const migrateSpriteSheetUrls = mutation({
-  args: { adminKey: v.optional(v.string()) },
+  args: { adminKey: v.string() },
   handler: async (ctx, { adminKey }) => {
     requireAdminKey(adminKey);
-    const allDefs = await ctx.db.query("spriteDefinitions").collect();
-    let patched = 0;
     const details: string[] = [];
+
+    // 1. Patch spriteDefinitions.spriteSheetUrl
+    const allDefs = await ctx.db.query("spriteDefinitions").collect();
+    let patchedDefs = 0;
     for (const def of allDefs) {
       const url: string = (def as any).spriteSheetUrl ?? "";
       const filename = url.split("/").pop() ?? "";
       if (url.startsWith("/assets/sprites/") && MOVED_NPC_FILES.includes(filename)) {
         const newUrl = `/assets/characters/${filename}`;
         await ctx.db.patch(def._id, { spriteSheetUrl: newUrl } as any);
-        details.push(`${def.name}: ${url} → ${newUrl}`);
-        patched++;
+        details.push(`spriteDefinition "${def.name}": ${url} → ${newUrl}`);
+        patchedDefs++;
       }
     }
-    return { total: allDefs.length, patched, details };
+
+    // 2. Patch profiles.spriteUrl
+    const allProfiles = await ctx.db.query("profiles").collect();
+    let patchedProfiles = 0;
+    for (const profile of allProfiles) {
+      const url: string = (profile as any).spriteUrl ?? "";
+      const filename = url.split("/").pop() ?? "";
+      if (url.startsWith("/assets/sprites/") && MOVED_NPC_FILES.includes(filename)) {
+        const newUrl = `/assets/characters/${filename}`;
+        await ctx.db.patch(profile._id, { spriteUrl: newUrl } as any);
+        details.push(`profile "${profile.name}": ${url} → ${newUrl}`);
+        patchedProfiles++;
+      }
+    }
+
+    // 3. Patch presence.spriteUrl
+    const allPresence = await ctx.db.query("presence").collect();
+    let patchedPresence = 0;
+    for (const p of allPresence) {
+      const url: string = (p as any).spriteUrl ?? "";
+      const filename = url.split("/").pop() ?? "";
+      if (url.startsWith("/assets/sprites/") && MOVED_NPC_FILES.includes(filename)) {
+        const newUrl = `/assets/characters/${filename}`;
+        await ctx.db.patch(p._id, { spriteUrl: newUrl } as any);
+        details.push(`presence: ${url} → ${newUrl}`);
+        patchedPresence++;
+      }
+    }
+
+    return {
+      patchedDefs,
+      patchedProfiles,
+      patchedPresence,
+      details,
+    };
+  },
+});
+
+/** One-shot backfill: make legacy assets explicitly system-visible */
+export const backfillAssetVisibilityTypes = mutation({
+  args: { adminKey: v.string() },
+  handler: async (ctx, { adminKey }) => {
+    requireAdminKey(adminKey);
+    let spriteDefsPatched = 0;
+    let itemDefsPatched = 0;
+    let npcProfilesPatched = 0;
+
+    const spriteDefs = await ctx.db.query("spriteDefinitions").collect();
+    for (const def of spriteDefs) {
+      if ((def as any).visibilityType === undefined) {
+        await ctx.db.patch(def._id, { visibilityType: "system" } as any);
+        spriteDefsPatched++;
+      }
+    }
+
+    const itemDefs = await ctx.db.query("itemDefs").collect();
+    for (const item of itemDefs) {
+      if ((item as any).visibilityType === undefined) {
+        await ctx.db.patch(item._id, { visibilityType: "system" } as any);
+        itemDefsPatched++;
+      }
+    }
+
+    const npcProfiles = await ctx.db.query("npcProfiles").collect();
+    for (const npc of npcProfiles) {
+      if ((npc as any).visibilityType === undefined) {
+        await ctx.db.patch(npc._id, { visibilityType: "system" } as any);
+        npcProfilesPatched++;
+      }
+    }
+
+    return {
+      spriteDefsPatched,
+      itemDefsPatched,
+      npcProfilesPatched,
+    };
   },
 });

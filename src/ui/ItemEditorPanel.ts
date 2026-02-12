@@ -68,6 +68,14 @@ interface ItemDef {
   tags?: string[];
   lore?: string;
   pickupSoundUrl?: string;
+  visibilityType?: "public" | "private" | "system";
+}
+
+function visibilityLabel(v?: "public" | "private" | "system"): string {
+  const type = v ?? "system";
+  if (type === "private") return "private";
+  if (type === "public") return "public";
+  return "system";
 }
 
 // Tileset info — shared with MapEditorPanel
@@ -155,6 +163,7 @@ export class ItemEditorPanel {
   private descArea!: HTMLTextAreaElement;
   private typeSelect!: HTMLSelectElement;
   private raritySelect!: HTMLSelectElement;
+  private visibilitySelect!: HTMLSelectElement;
   private iconUrlInput!: HTMLInputElement;
   private pickupSoundUrlInput!: HTMLInputElement;
   private equipSlotSelect!: HTMLSelectElement;
@@ -346,6 +355,11 @@ export class ItemEditorPanel {
     this.typeSelect = this.addSelect(typeRow, "Type", ITEM_TYPES.map((t) => ({ value: t, label: t.charAt(0).toUpperCase() + t.slice(1) })));
     this.raritySelect = this.addSelect(typeRow, "Rarity", RARITIES.map((r) => ({ value: r, label: r.charAt(0).toUpperCase() + r.slice(1) })));
     identitySec.appendChild(typeRow);
+
+    const visibilityRow = document.createElement("div");
+    visibilityRow.className = "item-editor-field-row";
+    this.visibilitySelect = this.addSelect(visibilityRow, "Visibility", this.getVisibilityOptions());
+    identitySec.appendChild(visibilityRow);
 
     const tagLabel = document.createElement("label");
     tagLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
@@ -1050,6 +1064,10 @@ export class ItemEditorPanel {
         const subEl = document.createElement("div");
         subEl.className = "item-editor-list-sub";
         subEl.textContent = item.name;
+        const visEl = document.createElement("span");
+        visEl.className = `item-editor-vis-tag ${visibilityLabel(item.visibilityType)}`;
+        visEl.textContent = visibilityLabel(item.visibilityType);
+        subEl.appendChild(visEl);
 
         info.append(nameEl, subEl);
         el.append(icon, info);
@@ -1128,6 +1146,7 @@ export class ItemEditorPanel {
     this.descArea.value = item.description;
     this.typeSelect.value = item.type;
     this.raritySelect.value = item.rarity;
+    this.rebuildVisibilitySelect(item.visibilityType ?? (item._id ? "system" : "private"));
     this.iconUrlInput.value = item.iconUrl ?? "";
     this.pickupSoundUrlInput.value = item.pickupSoundUrl ?? "";
     this.equipSlotSelect.value = item.equipSlot ?? "";
@@ -1167,6 +1186,7 @@ export class ItemEditorPanel {
     item.description = this.descArea.value.trim();
     item.type = this.typeSelect.value as ItemType;
     item.rarity = this.raritySelect.value as Rarity;
+    item.visibilityType = this.visibilitySelect.value as any;
     item.iconUrl = this.iconUrlInput.value.trim() || undefined;
     item.pickupSoundUrl = this.pickupSoundUrlInput.value.trim() || undefined;
     // iconTileset fields are set directly by the tile picker click handler
@@ -1187,6 +1207,32 @@ export class ItemEditorPanel {
     item.stats = hasStats ? stats : undefined;
 
     return item;
+  }
+
+  private getVisibilityOptions(): Array<{ value: "private" | "public" | "system"; label: string }> {
+    const isSuperuser = this.game?.profile.role === "superuser";
+    const options: Array<{ value: "private" | "public" | "system"; label: string }> = [
+      { value: "private", label: "Private (only me)" },
+      { value: "public", label: "Public (all users)" },
+    ];
+    if (isSuperuser) {
+      options.push({ value: "system", label: "System (global built-in)" });
+    }
+    return options;
+  }
+
+  private rebuildVisibilitySelect(selected: "private" | "public" | "system" = "private") {
+    if (!this.visibilitySelect) return;
+    const options = this.getVisibilityOptions();
+    this.visibilitySelect.innerHTML = "";
+    for (const opt of options) {
+      const el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      this.visibilitySelect.appendChild(el);
+    }
+    const canSelect = options.some((o) => o.value === selected);
+    this.visibilitySelect.value = canSelect ? selected : "private";
   }
 
   // =========================================================================
@@ -1235,6 +1281,7 @@ export class ItemEditorPanel {
         tags: item.tags?.length ? item.tags : undefined,
         lore: item.lore,
         pickupSoundUrl: item.pickupSoundUrl,
+        visibilityType: item.visibilityType,
       });
 
       this.statusEl.textContent = "Saved!";

@@ -22,6 +22,9 @@
     "reset:all-maps": "node scripts/admin-run.mjs admin:resetAllProfileMaps",
     "dump": "node scripts/dump-state.mjs",
     "dump:full": "node scripts/dump-state.mjs --tiles",
+    "dump:maps": "node scripts/dump-maps.mjs",
+    "maps:list": "node scripts/list-maps.mjs",
+    "npcs:list": "node scripts/list-npcs.mjs",
     "backup:world": "node scripts/backup-world.mjs",
     "restore:world": "node scripts/restore-world.mjs",
     "audit:maps": "node scripts/admin-run.mjs migrations:auditMapSizes",
@@ -32,6 +35,7 @@
     "auth:grant-editor": "npx convex run admin:grantMapEditor",
     "users": "node scripts/manage-users.mjs",
     "users:list": "node scripts/manage-users.mjs list",
+    "users:list:table": "node scripts/list-users.mjs",
     "users:remove-anonymous": "node scripts/manage-users.mjs remove-anonymous",
     "db:check": "node scripts/compact-local-db.mjs --check",
     "db:compact": "node scripts/compact-local-db.mjs"

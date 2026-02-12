@@ -164,3 +164,26 @@
 .auth-status.error {
   color: var(--danger);
 }
+
+/* Guest access link */
+.auth-guest-wrap {
+  margin-top: 16px;
+  text-align: center;
+}
+
+.auth-guest-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 12px;
+  font-family: var(--font-ui);
+  transition: color 0.15s;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.auth-guest-btn:hover {
+  color: var(--text-primary);
+}

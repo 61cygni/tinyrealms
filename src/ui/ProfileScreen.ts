@@ -9,11 +9,11 @@ import "./ProfileScreen.css";
 
 // Available character sprites the player can pick from
 const SPRITE_OPTIONS = [
-  { label: "Villager 1", url: "/assets/sprites/villager2.json" },
-  { label: "Villager 2", url: "/assets/sprites/villager3.json" },
-  { label: "Villager 3", url: "/assets/sprites/villager4.json" },
-  { label: "Villager 4", url: "/assets/sprites/villager5.json" },
-  { label: "Woman", url: "/assets/sprites/woman-med.json" },
+  { label: "Villager 1", url: "/assets/characters/villager2.json" },
+  { label: "Villager 2", url: "/assets/characters/villager3.json" },
+  { label: "Villager 3", url: "/assets/characters/villager4.json" },
+  { label: "Villager 4", url: "/assets/characters/villager5.json" },
+  { label: "Woman", url: "/assets/characters/woman-med.json" },
 ];
 
 const PROFILE_COLORS = [

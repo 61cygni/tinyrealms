@@ -11,7 +11,7 @@ import { api } from "../../convex/_generated/api";
 import type { AppMode, MapData, Portal, ProfileData, PresenceData } from "./types.ts";
 import type { Id } from "../../convex/_generated/dataModel";
 
-const PRESENCE_INTERVAL_MS = 1000;  // how often to push position to Convex (was 200ms — reduced to limit DB growth)
+const PRESENCE_INTERVAL_MS = 250;   // how often to push position to Convex
 const SAVE_INTERVAL_MS = 30_000;   // how often to persist position to profile (was 10s)
 const PRESENCE_MOVE_THRESHOLD = 2; // px — skip presence update if player hasn't moved
 const DEFAULT_ITEM_PICKUP_SFX = "/assets/audio/take-item.mp3";
@@ -33,7 +33,10 @@ export class Game {
 
   /** The current player profile (from Convex) */
   profile: ProfileData;
-  currentMapName = "cozy-cabin";  // overwritten by profile's mapName on init
+  currentMapName = "Cozy Cabin";  // overwritten by profile's mapName on init
+
+  /** True when the player is an unauthenticated guest (read-only mode) */
+  get isGuest() { return this.profile.role === "guest"; }
 
   private canvas: HTMLCanvasElement;
   private resizeObserver: ResizeObserver | null = null;
@@ -131,18 +134,23 @@ export class Game {
 
     this.initialized = true;
 
-    // Seed any static JSON maps that aren't yet in Convex
-    await this.seedStaticMaps();
+    // Seed any static JSON maps that aren't yet in Convex (skip for guests — read-only)
+    if (!this.isGuest) {
+      await this.seedStaticMaps();
+    }
 
     // Auto-load the default map
     await this.loadDefaultMap();
 
     // Clean up any stale presence rows, then start broadcasting
-    try {
-      const convex = getConvexClient();
-      await convex.mutation(api.presence.cleanup, { staleThresholdMs: 5000 });
-    } catch (e) {
-      console.warn("Presence cleanup failed (OK on first run):", e);
+    // (guests are read-only — skip presence mutations but still subscribe)
+    if (!this.isGuest) {
+      try {
+        const convex = getConvexClient();
+        await convex.mutation(api.presence.cleanup, { staleThresholdMs: 5000 });
+      } catch (e) {
+        console.warn("Presence cleanup failed (OK on first run):", e);
+      }
     }
     this.startPresence();
   }
@@ -188,20 +196,23 @@ export class Game {
       let mapData: MapData | null = null;
 
       // Determine which map to load — use the profile's saved map, or default
-      const targetMap = this.profile.mapName || "cozy-cabin";
+      const targetMap = this.profile.mapName || "Cozy Cabin";
       console.log(`Loading map: "${targetMap}" (profile.mapName=${this.profile.mapName})`);
 
       // 1) Try to load from Convex first (saved edits)
       try {
         const convex = getConvexClient();
+        console.log(`[loadDefaultMap] querying Convex for map "${targetMap}"...`);
         const saved = await convex.query(api.maps.getByName, { name: targetMap });
         if (saved) {
-          console.log(`Loading map "${targetMap}" from Convex (saved version)`);
+          console.log(`[loadDefaultMap] found "${targetMap}" in Convex (id: ${saved._id})`);
           mapData = this.convexMapToMapData(saved);
+        } else {
+          console.warn(`[loadDefaultMap] Convex returned null for "${targetMap}" — map not found by that name`);
         }
       } catch (convexErr) {
-        console.warn(
-          `Could not load map "${targetMap}" from Convex, falling back to JSON:`,
+        console.error(
+          `[loadDefaultMap] Convex query FAILED for "${targetMap}":`,
           convexErr,
         );
       }
@@ -215,10 +226,12 @@ export class Game {
           console.warn(
             `Loaded map "${targetMap}" from static JSON (Convex missing/unavailable)`,
           );
-          // Auto-seed to Convex
-          this.seedMapToConvex(mapData).catch((e) =>
-            console.warn("Failed to seed map to Convex:", e),
-          );
+          // Auto-seed to Convex (skip for guests)
+          if (!this.isGuest) {
+            this.seedMapToConvex(mapData).catch((e) =>
+              console.warn("Failed to seed map to Convex:", e),
+            );
+          }
         } else {
           console.warn(
             `Static JSON not found for map "${targetMap}" (status ${resp.status})`,
@@ -245,9 +258,12 @@ export class Game {
       }
 
       await this.loadMap(mapData!);
-      this.currentMapName = mapData!.name || "cozy-cabin";
+      this.currentMapName = mapData!.name || "Cozy Cabin";
       this.currentMapData = mapData!;
       this.currentPortals = mapData!.portals ?? [];
+      console.log(`[Init] Map "${this.currentMapName}" loaded — ${this.currentPortals.length} portals, isGuest=${this.isGuest}`,
+        this.currentPortals.map(p => `"${p.name}" at (${p.x},${p.y}) ${p.width}x${p.height} -> ${p.targetMap}`)
+      );
 
       // Tell ObjectLayer the tile size so it can compute door collision tiles
       this.objectLayer.tileWidth = mapData!.tileWidth;
@@ -302,12 +318,14 @@ export class Game {
       await this.loadSpriteDefs();
       this.subscribeToNpcState(this.currentMapName);
 
-      // Ensure the NPC tick loop is running on the server
-      try {
-        const convex = getConvexClient();
-        await convex.mutation(api.npcEngine.ensureLoop, {});
-      } catch (e) {
-        console.warn("NPC ensureLoop failed (OK on first run):", e);
+      // Ensure the NPC tick loop is running on the server (skip for guests)
+      if (!this.isGuest) {
+        try {
+          const convex = getConvexClient();
+          await convex.mutation(api.npcEngine.ensureLoop, {});
+        } catch (e) {
+          console.warn("NPC ensureLoop failed (OK on first run):", e);
+        }
       }
 
       // Start background music (use map's musicUrl, fallback to default)
@@ -372,26 +390,35 @@ export class Game {
   async changeMap(targetMapName: string, spawnLabel: string, direction?: string) {
     if (this.changingMap) return;
     this.changingMap = true;
+    // Reset the portal-empty warning flag for the new map
+    (this as any)._portalEmptyWarned = false;
 
-    console.log(`[MapChange] ${this.currentMapName} -> ${targetMapName} (spawn: ${spawnLabel})`);
+    console.log(`[MapChange] ${this.currentMapName} -> ${targetMapName} (spawn: ${spawnLabel}, isGuest: ${this.isGuest})`);
 
     try {
       // 1) Fade out
+      console.log("[MapChange] step 1: fade out");
       await this.fadeOverlay(true);
 
-      // 2) Save current position before leaving
+      // 2) Save current position before leaving (skip for guests)
       const convex = getConvexClient();
-      const profileId = this.profile._id as Id<"profiles">;
-      const pos = this.entityLayer.getPlayerPosition();
-      await convex.mutation(api.profiles.savePosition, {
-        id: profileId,
-        mapName: this.currentMapName,
-        x: pos.x,
-        y: pos.y,
-        direction: pos.direction,
-      }).catch(() => {});
+      if (!this.isGuest) {
+        console.log("[MapChange] step 2: saving position");
+        const profileId = this.profile._id as Id<"profiles">;
+        const pos = this.entityLayer.getPlayerPosition();
+        await convex.mutation(api.profiles.savePosition, {
+          id: profileId,
+          mapName: this.currentMapName,
+          x: pos.x,
+          y: pos.y,
+          direction: pos.direction,
+        }).catch(() => {});
+      } else {
+        console.log("[MapChange] step 2: skipped (guest)");
+      }
 
       // 3) Unsubscribe from current map's data
+      console.log("[MapChange] step 3: unsubscribing");
       this.mapObjectsUnsub?.();
       this.mapObjectsUnsub = null;
       this.worldItemsUnsub?.();
@@ -400,44 +427,58 @@ export class Game {
       this.npcStateUnsub = null;
 
       // 4) Clear rendering layers
+      console.log("[MapChange] step 4: clearing layers");
       this.worldItemLayer.clear();
       this.objectLayer.clear();
       this.entityLayer.removeAllPlacedNPCs();
 
       // 5) Load new map from Convex (or fallback to static JSON)
+      console.log("[MapChange] step 5: loading map from Convex...");
       let mapData: MapData | null = null;
-      const saved = await convex.query(api.maps.getByName, { name: targetMapName });
-      if (saved) {
-        console.log(`Loaded map "${targetMapName}" from Convex (saved version)`);
-        mapData = this.convexMapToMapData(saved);
-      } else {
+      try {
+        const saved = await convex.query(api.maps.getByName, { name: targetMapName });
+        if (saved) {
+          console.log(`[MapChange] step 5: loaded "${targetMapName}" from Convex`);
+          mapData = this.convexMapToMapData(saved);
+        } else {
+          console.log(`[MapChange] step 5: "${targetMapName}" not in Convex, trying static JSON`);
+        }
+      } catch (convexErr) {
+        console.error("[MapChange] step 5: Convex query failed:", convexErr);
+      }
+
+      if (!mapData) {
         // Try static JSON fallback and seed it into Convex
         try {
           const resp = await fetch(`/assets/maps/${targetMapName}.json`);
           if (resp.ok) {
             mapData = (await resp.json()) as MapData;
             mapData.portals = mapData.portals ?? [];
-            console.warn(
-              `Loaded map "${targetMapName}" from static JSON (Convex missing/unavailable), seeding...`,
-            );
-            // Auto-seed to Convex so future loads come from there
-            this.seedMapToConvex(mapData).catch((e) =>
-              console.warn("Failed to seed map to Convex:", e),
-            );
+            console.log(`[MapChange] step 5: loaded "${targetMapName}" from static JSON`);
+            // Auto-seed to Convex so future loads come from there (skip for guests)
+            if (!this.isGuest) {
+              this.seedMapToConvex(mapData).catch((e) =>
+                console.warn("Failed to seed map to Convex:", e),
+              );
+            }
           } else {
             console.warn(
-              `Static JSON not found for map "${targetMapName}" (status ${resp.status})`,
+              `[MapChange] step 5: static JSON not found for "${targetMapName}" (status ${resp.status})`,
             );
           }
-        } catch { /* ignore */ }
+        } catch (fetchErr) {
+          console.error("[MapChange] step 5: static JSON fetch failed:", fetchErr);
+        }
       }
 
       if (!mapData) {
-        console.warn(`Map "${targetMapName}" not found`);
+        console.warn(`[MapChange] ABORT: map "${targetMapName}" not found anywhere`);
         await this.fadeOverlay(false);
         this.changingMap = false;
         return;
       }
+
+      console.log(`[MapChange] step 6: loadMap (portals: ${(mapData.portals ?? []).length}, labels: ${(mapData.labels ?? []).length})`);
       await this.loadMap(mapData);
       this.currentMapName = mapData.name;
       this.currentMapData = mapData;
@@ -455,6 +496,7 @@ export class Game {
 
       // 6) Position player at spawn label
       const spawn = mapData.labels?.find((l) => l.name === spawnLabel) ?? mapData.labels?.[0];
+      console.log(`[MapChange] step 7: spawn label="${spawnLabel}" found=${!!spawn} pos=${spawn ? `(${spawn.x},${spawn.y})` : "none"}`);
       if (spawn) {
         this.entityLayer.playerX = spawn.x * mapData.tileWidth + mapData.tileWidth / 2;
         this.entityLayer.playerY = spawn.y * mapData.tileHeight + mapData.tileHeight / 2;
@@ -464,6 +506,7 @@ export class Game {
       }
 
       // 7) Reload objects and subscribe
+      console.log("[MapChange] step 8: loading objects/items/NPCs");
       await this.loadPlacedObjects(this.currentMapName);
       this.subscribeToMapObjects(this.currentMapName);
 
@@ -474,11 +517,14 @@ export class Game {
       this.subscribeToNpcState(this.currentMapName);
 
       // 8) Restart presence on new map
+      console.log("[MapChange] step 9: restarting presence");
       this.stopPresence();
       this.startPresence();
 
-      // 9) Start NPC loop
-      await convex.mutation(api.npcEngine.ensureLoop, {}).catch(() => {});
+      // 9) Start NPC loop (skip for guests — they can't trigger mutations)
+      if (!this.isGuest) {
+        await convex.mutation(api.npcEngine.ensureLoop, {}).catch(() => {});
+      }
 
       // 10) Switch music if the new map has a different track
       const newMusic = mapData.musicUrl ?? "/assets/audio/cozy.m4a";
@@ -488,9 +534,10 @@ export class Game {
       this.onMapChanged?.(this.currentMapName);
 
       // 12) Fade in
+      console.log("[MapChange] step 10: fade in — SUCCESS");
       await this.fadeOverlay(false);
     } catch (err) {
-      console.warn("Failed to change map:", err);
+      console.error("[MapChange] FAILED at some step:", err);
       await this.fadeOverlay(false);
     }
 
@@ -610,10 +657,13 @@ export class Game {
       );
 
       // Handle item pickup with E key (only if no toggleable object is near)
-      if (!this.objectLayer.getNearestToggleableId()) {
-        this.handleItemPickup();
-      } else {
-        this.handleObjectToggle();
+      // Guests can't interact — skip all mutations
+      if (!this.isGuest) {
+        if (!this.objectLayer.getNearestToggleableId()) {
+          this.handleItemPickup();
+        } else {
+          this.handleObjectToggle();
+        }
       }
     }
 
@@ -657,7 +707,19 @@ export class Game {
 
   /** Check if the player is standing in a portal zone and trigger map change */
   private checkPortals() {
-    if (this.changingMap || this.currentPortals.length === 0) return;
+    if (this.changingMap) {
+      // Uncomment below for verbose debugging:
+      // console.log("[Portal:check] skipped — changingMap is true");
+      return;
+    }
+    if (this.currentPortals.length === 0) {
+      // Only log once per map to avoid spam
+      if (!(this as any)._portalEmptyWarned) {
+        console.warn("[Portal:check] No portals on current map:", this.currentMapName);
+        (this as any)._portalEmptyWarned = true;
+      }
+      return;
+    }
     if (!this.currentMapData) return;
 
     const px = this.entityLayer.playerX;
@@ -677,7 +739,7 @@ export class Game {
         pty < portal.y + portal.height
       ) {
         // Player entered the portal zone!
-        console.log(`[Portal] "${portal.name}" -> map "${portal.targetMap}" spawn "${portal.targetSpawn}"`);
+        console.log(`[Portal] HIT "${portal.name}" -> map "${portal.targetMap}" spawn "${portal.targetSpawn}" | isGuest=${this.isGuest}`);
         this.changeMap(portal.targetMap, portal.targetSpawn, portal.direction);
         return; // only trigger one portal per frame
       }
@@ -723,39 +785,41 @@ export class Game {
   private startPresence() {
     const convex = getConvexClient();
     const profileId = this.profile._id as Id<"profiles">;
-    console.log(`[Presence] Starting for profile "${this.profile.name}" (${profileId}) on map "${this.currentMapName}"`);
+    console.log(`[Presence] Starting for profile "${this.profile.name}" (${profileId}) on map "${this.currentMapName}"${this.isGuest ? " [GUEST — read-only]" : ""}`);
 
-    // 1) Push local position + velocity periodically (delta-only to reduce DB writes)
-    this.presenceTimer = setInterval(() => {
-      const pos = this.entityLayer.getPlayerPosition();
-      const dx = pos.x - this.lastPresenceX;
-      const dy = pos.y - this.lastPresenceY;
-      // Skip update if player hasn't moved beyond threshold (reduces mutations ~50-90%)
-      if (dx * dx + dy * dy < PRESENCE_MOVE_THRESHOLD * PRESENCE_MOVE_THRESHOLD) return;
-      this.lastPresenceX = pos.x;
-      this.lastPresenceY = pos.y;
-      convex
-        .mutation(api.presence.update, {
-          profileId,
-          mapName: this.currentMapName,
-          x: pos.x,
-          y: pos.y,
-          vx: pos.vx,
-          vy: pos.vy,
-          direction: pos.direction,
-          animation: this.entityLayer.isPlayerMoving() ? "walk" : "idle",
-          spriteUrl: this.profile.spriteUrl,
-          name: this.profile.name,
-        })
-        .catch((err) => console.warn("Presence update failed:", err));
-    }, PRESENCE_INTERVAL_MS);
+    // Guests don't broadcast their position or save it, but still see others
+    if (!this.isGuest) {
+      // 1) Push local position + velocity periodically (delta-only to reduce DB writes)
+      this.presenceTimer = setInterval(() => {
+        const pos = this.entityLayer.getPlayerPosition();
+        const dx = pos.x - this.lastPresenceX;
+        const dy = pos.y - this.lastPresenceY;
+        // Skip update if player hasn't moved beyond threshold (reduces mutations ~50-90%)
+        if (dx * dx + dy * dy < PRESENCE_MOVE_THRESHOLD * PRESENCE_MOVE_THRESHOLD) return;
+        this.lastPresenceX = pos.x;
+        this.lastPresenceY = pos.y;
+        convex
+          .mutation(api.presence.update, {
+            profileId,
+            mapName: this.currentMapName,
+            x: pos.x,
+            y: pos.y,
+            vx: pos.vx,
+            vy: pos.vy,
+            direction: pos.direction,
+            animation: this.entityLayer.isPlayerMoving() ? "walk" : "idle",
+            spriteUrl: this.profile.spriteUrl,
+            name: this.profile.name,
+          })
+          .catch((err) => console.warn("Presence update failed:", err));
+      }, PRESENCE_INTERVAL_MS);
+    }
 
-    // 2) Subscribe to presence of others on this map
+    // 2) Subscribe to presence of others on this map (guests included — read-only)
     this.presenceUnsub = convex.onUpdate(
       api.presence.listByMap,
       { mapName: this.currentMapName },
       (presenceList) => {
-        console.log(`[Presence] Received ${presenceList.length} entries`);
         const mapped: PresenceData[] = presenceList.map((p) => ({
           profileId: p.profileId,
           name: p.name,
@@ -775,26 +839,29 @@ export class Game {
       },
     );
 
-    // 3) Save position to profile periodically (for resume on reload)
-    this.saveTimer = setInterval(() => {
-      const pos = this.entityLayer.getPlayerPosition();
-      convex
-        .mutation(api.profiles.savePosition, {
-          id: profileId,
-          mapName: this.currentMapName,
-          x: pos.x,
-          y: pos.y,
-          direction: pos.direction,
-        })
-        .catch((err) => console.warn("Position save failed:", err));
-    }, SAVE_INTERVAL_MS);
+    if (!this.isGuest) {
+      // 3) Save position to profile periodically (for resume on reload)
+      this.saveTimer = setInterval(() => {
+        const pos = this.entityLayer.getPlayerPosition();
+        convex
+          .mutation(api.profiles.savePosition, {
+            id: profileId,
+            mapName: this.currentMapName,
+            x: pos.x,
+            y: pos.y,
+            direction: pos.direction,
+          })
+          .catch((err) => console.warn("Position save failed:", err));
+      }, SAVE_INTERVAL_MS);
 
-    // 4) Clean up presence on tab close
-    window.addEventListener("beforeunload", this.handleUnload);
-    window.addEventListener("pagehide", this.handleUnload);
+      // 4) Clean up presence on tab close
+      window.addEventListener("beforeunload", this.handleUnload);
+      window.addEventListener("pagehide", this.handleUnload);
+    }
   }
 
   private handleUnload = () => {
+    if (this.isGuest) return;
     const convex = getConvexClient();
     const profileId = this.profile._id as Id<"profiles">;
     // Best-effort: fire-and-forget cleanup
@@ -817,10 +884,12 @@ export class Game {
     window.removeEventListener("beforeunload", this.handleUnload);
     window.removeEventListener("pagehide", this.handleUnload);
 
-    // Remove presence row and release profile
-    const convex = getConvexClient();
-    const profileId = this.profile._id as Id<"profiles">;
-    convex.mutation(api.presence.remove, { profileId }).catch(() => {});
+    // Remove presence row and release profile (not for guests)
+    if (!this.isGuest) {
+      const convex = getConvexClient();
+      const profileId = this.profile._id as Id<"profiles">;
+      convex.mutation(api.presence.remove, { profileId }).catch(() => {});
+    }
   }
 
   // ===========================================================================

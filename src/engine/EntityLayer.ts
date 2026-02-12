@@ -17,8 +17,31 @@ import { createDialogueSplash } from "../splash/screens/DialogueSplash.ts";
 import type { DialogueNode } from "../splash/screens/DialogueSplash.ts";
 
 const MOVE_SPEED = 120; // pixels per second
+const SPRINT_MULTIPLIER = 1.5; // hold Shift to move faster
 const ANIM_SPEED = 0.12; // frames per tick (PixiJS AnimatedSprite)
 const NPC_INTERACT_RADIUS = 48; // pixels
+// ---------------------------------------------------------------------------
+// Remote player interpolation
+// ---------------------------------------------------------------------------
+// Instead of extrapolating into the future (which amplifies velocity noise),
+// we buffer the last few server snapshots and render in the *recent past*,
+// smoothly lerping between two known positions.  This gives perfectly smooth
+// movement at the cost of INTERP_DELAY_MS of visual latency — imperceptible
+// in a co-op world.
+const INTERP_DELAY_MS = 300;       // render this far behind "now"
+const INTERP_MAX_SNAPSHOTS = 6;    // keep a small ring buffer per player
+const REMOTE_SNAP_DISTANCE_PX = 96; // snap if correction is enormous (teleport)
+
+/** A position snapshot received from the server */
+interface RemoteSnapshot {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  direction: string;
+  animation: string;
+  time: number; // performance.now() when we received it
+}
 
 // Player collision box (relative to anchor at bottom-center of sprite).
 // The original checks two points per direction to form a thin bounding box
@@ -73,17 +96,15 @@ export class EntityLayer {
       spritesheet: Spritesheet | null;
       spriteUrl: string;
       label: Text;
-      // Server state (set when a Convex update arrives)
-      serverX: number;
-      serverY: number;
-      serverVX: number;
-      serverVY: number;
-      serverTime: number;      // performance.now() when last server update arrived
+      // Interpolation buffer (newest at end)
+      snapshots: RemoteSnapshot[];
       // Rendered (smoothed) position
       renderX: number;
       renderY: number;
+      // Current visual state (debounced)
       direction: string;
       animation: string;
+      directionHoldFrames: number; // frames the current direction has been consistent
     }
   > = new Map();
 
@@ -134,7 +155,7 @@ export class EntityLayer {
 
   private async loadCharacterSprite() {
     try {
-      const spriteUrl = this.game.profile?.spriteUrl ?? "/assets/sprites/villager4.json";
+      const spriteUrl = this.game.profile?.spriteUrl ?? "/assets/characters/villager4.json";
       const sheet = await loadSpriteSheet(spriteUrl);
       this.spritesheet = sheet;
       if (!this.spritesheet.animations) return;
@@ -445,26 +466,90 @@ export class EntityLayer {
     // Camera follows player
     this.game.camera.follow(this.playerX, this.playerY);
 
-    // Extrapolate + blend remote players
+    // Interpolate remote players from their snapshot buffers.
+    // We render at (now - INTERP_DELAY_MS) so we always have two snapshots
+    // to lerp between, giving perfectly smooth movement.
     const now = performance.now();
+    const renderTime = now - INTERP_DELAY_MS;
+
     for (const [, remote] of this.remotePlayers) {
-      // Time since last server update (seconds)
-      const elapsed = (now - remote.serverTime) / 1000;
+      const snaps = remote.snapshots;
+      let targetX: number;
+      let targetY: number;
+      let interpDir: string = remote.direction;
+      let interpAnim: string = remote.animation;
 
-      // Predicted position = server snapshot + velocity * elapsed
-      // Clamp extrapolation to 0.5s to avoid runaway if updates stop
-      const t = Math.min(elapsed, 0.5);
-      const predictedX = remote.serverX + remote.serverVX * t;
-      const predictedY = remote.serverY + remote.serverVY * t;
+      if (snaps.length >= 2) {
+        // Find the two snapshots that bracket renderTime
+        let i = snaps.length - 1;
+        while (i > 0 && snaps[i].time > renderTime) i--;
+        const a = snaps[i];
+        const b = snaps[Math.min(i + 1, snaps.length - 1)];
 
-      // Smoothly blend rendered position toward predicted position
-      // Use time-based smoothing: ~90% of the way in 100ms
-      const blend = 1 - Math.pow(0.0001, dt);
-      remote.renderX += (predictedX - remote.renderX) * blend;
-      remote.renderY += (predictedY - remote.renderY) * blend;
+        if (a === b || a.time === b.time) {
+          // Only one usable snapshot — hold at its position (no prediction)
+          targetX = a.x;
+          targetY = a.y;
+          interpDir = a.direction;
+          interpAnim = a.animation;
+        } else {
+          // Lerp between a and b — pure interpolation, no velocity
+          const t = Math.max(0, Math.min(1, (renderTime - a.time) / (b.time - a.time)));
+          targetX = a.x + (b.x - a.x) * t;
+          targetY = a.y + (b.y - a.y) * t;
+          interpDir = t < 0.5 ? a.direction : b.direction;
+          interpAnim = t < 0.5 ? a.animation : b.animation;
+        }
+      } else if (snaps.length === 1) {
+        // Only one snapshot — hold at its position (no prediction)
+        targetX = snaps[0].x;
+        targetY = snaps[0].y;
+        interpDir = snaps[0].direction;
+        interpAnim = snaps[0].animation;
+      } else {
+        // No snapshots — do nothing
+        continue;
+      }
+
+      // Snap if teleport-level correction, otherwise move directly
+      // (interpolation is already smooth, no need for extra blending)
+      const cdx = targetX - remote.renderX;
+      const cdy = targetY - remote.renderY;
+      if (cdx * cdx + cdy * cdy > REMOTE_SNAP_DISTANCE_PX * REMOTE_SNAP_DISTANCE_PX) {
+        remote.renderX = targetX;
+        remote.renderY = targetY;
+      } else {
+        remote.renderX = targetX;
+        remote.renderY = targetY;
+      }
 
       remote.container.x = remote.renderX;
       remote.container.y = remote.renderY;
+
+      // Debounce direction changes — only apply after 2 consistent frames
+      // to prevent one-frame direction flickers from swapping sprites
+      if (interpDir !== remote.direction) {
+        remote.directionHoldFrames++;
+        if (remote.directionHoldFrames >= 2) {
+          this.applyRemoteDirection(remote, interpDir);
+          remote.direction = interpDir;
+          remote.directionHoldFrames = 0;
+        }
+      } else {
+        remote.directionHoldFrames = 0;
+      }
+
+      // Smooth animation state: only toggle walk↔idle after direction is stable
+      if (interpAnim !== remote.animation) {
+        if (remote.sprite) {
+          if (interpAnim === "walk" && !remote.sprite.playing) {
+            remote.sprite.play();
+          } else if (interpAnim === "idle" && remote.sprite.playing) {
+            remote.sprite.gotoAndStop(0);
+          }
+        }
+        remote.animation = interpAnim;
+      }
     }
 
     // NOTE: Do NOT call input.endFrame() here — it must be called once
@@ -505,8 +590,10 @@ export class EntityLayer {
     const prevX = this.playerX;
     const prevY = this.playerY;
 
-    const newX = this.playerX + dx * MOVE_SPEED * dt;
-    const newY = this.playerY + dy * MOVE_SPEED * dt;
+    const isSprinting = input.isDown("Shift");
+    const speed = MOVE_SPEED * (isSprinting ? SPRINT_MULTIPLIER : 1);
+    const newX = this.playerX + dx * speed * dt;
+    const newY = this.playerY + dy * speed * dt;
 
     // Check collision using a bounding box around the player's feet.
     // We check all four corners of the box for the proposed position.
@@ -524,11 +611,13 @@ export class EntityLayer {
       }
     }
 
-    // Track actual velocity (px/s) for presence broadcasts
-    if (dt > 0) {
-      this.playerVX = (this.playerX - prevX) / dt;
-      this.playerVY = (this.playerY - prevY) / dt;
-    }
+    // Track intended velocity (px/s) for presence broadcasts.
+    // We send the INPUT-derived direction × speed, NOT the collision-adjusted
+    // displacement.  The old approach produced wildly noisy velocity when the
+    // player was sliding along walls (oscillating between 0 and full speed each
+    // frame), which caused remote-player extrapolation to jitter.
+    this.playerVX = dx * speed;
+    this.playerVY = dy * speed;
   }
 
   /**
@@ -578,8 +667,8 @@ export class EntityLayer {
       nearest.setPromptVisible(true);
     }
 
-    // Interact on E press
-    if (nearest && (input.wasJustPressed("e") || input.wasJustPressed("E"))) {
+    // Interact on E press (guests can't talk to NPCs)
+    if (nearest && !this.game.isGuest && (input.wasJustPressed("e") || input.wasJustPressed("E"))) {
       this.startDialogue(nearest);
     }
   }
@@ -628,6 +717,21 @@ export class EntityLayer {
   // Remote players (multiplayer presence)
   // ---------------------------------------------------------------------------
 
+  /** Apply a direction change to a remote player's sprite */
+  private applyRemoteDirection(
+    remote: { sprite: AnimatedSprite | null; spritesheet: Spritesheet | null; animation: string },
+    dir: string,
+  ) {
+    if (!remote.sprite || !remote.spritesheet) return;
+    const animKey = DIR_ANIM[dir as Direction] ?? "row0";
+    const frames = remote.spritesheet.animations[animKey];
+    if (frames && frames.length > 0) {
+      remote.sprite.textures = frames;
+      if (remote.animation === "walk") remote.sprite.play();
+      else remote.sprite.gotoAndStop(0);
+    }
+  }
+
   updatePresence(presenceList: PresenceData[], localProfileId: string) {
     const activeIds = new Set<string>();
     const now = performance.now();
@@ -669,15 +773,12 @@ export class EntityLayer {
           spritesheet: null,
           spriteUrl: p.spriteUrl,
           label,
-          serverX: p.x,
-          serverY: p.y,
-          serverVX: p.vx,
-          serverVY: p.vy,
-          serverTime: now,
+          snapshots: [],
           renderX: p.x,
           renderY: p.y,
           direction: p.direction,
           animation: p.animation,
+          directionHoldFrames: 0,
         };
         this.remotePlayers.set(p.profileId, remote);
 
@@ -685,34 +786,24 @@ export class EntityLayer {
         this.loadRemotePlayerSprite(p.profileId, p.spriteUrl);
       }
 
-      // New server snapshot arrived — update anchor
-      remote.serverX = p.x;
-      remote.serverY = p.y;
-      remote.serverVX = p.vx;
-      remote.serverVY = p.vy;
-      remote.serverTime = now;
+      // Push a new snapshot into the interpolation buffer
+      remote.snapshots.push({
+        x: p.x,
+        y: p.y,
+        vx: p.vx,
+        vy: p.vy,
+        direction: p.direction,
+        animation: p.animation,
+        time: now,
+      });
+      // Trim old snapshots (keep only the last N)
+      while (remote.snapshots.length > INTERP_MAX_SNAPSHOTS) {
+        remote.snapshots.shift();
+      }
+
       remote.label.text = p.name || "Player";
-
-      // Update direction animation
-      if (remote.sprite && remote.spritesheet && p.direction !== remote.direction) {
-        const animKey = DIR_ANIM[p.direction as Direction] ?? "row0";
-        const frames = remote.spritesheet.animations[animKey];
-        if (frames && frames.length > 0) {
-          remote.sprite.textures = frames;
-          remote.sprite.play();
-        }
-      }
-      remote.direction = p.direction;
-
-      // Play/stop animation based on movement
-      if (remote.sprite) {
-        if (p.animation === "walk" && !remote.sprite.playing) {
-          remote.sprite.play();
-        } else if (p.animation === "idle" && remote.sprite.playing) {
-          remote.sprite.gotoAndStop(0);
-        }
-      }
-      remote.animation = p.animation;
+      // Direction and animation are now handled by the interpolation loop
+      // in update(), not eagerly here — prevents per-update sprite flicker.
     }
 
     for (const [id, remote] of this.remotePlayers) {

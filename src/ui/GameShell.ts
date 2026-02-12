@@ -65,17 +65,20 @@ export class GameShell {
     const game = this.game!;
 
     const isAdmin = this.profile.role === "superuser";
+    const isGuest = this.profile.role === "guest";
 
-    // Map browser overlay
-    this.mapBrowser = new MapBrowser({
-      onTravel: (mapName) => {
-        game.changeMap(mapName, "start1");
-      },
-      getCurrentMap: () => game.currentMapName,
-      getProfileId: () => this.profile._id,
-      isAdmin,
-    });
-    this.el.appendChild(this.mapBrowser.el);
+    // Map browser overlay (guests can still browse maps via portals, but not the browser)
+    if (!isGuest) {
+      this.mapBrowser = new MapBrowser({
+        onTravel: (mapName) => {
+          game.changeMap(mapName, "start1");
+        },
+        getCurrentMap: () => game.currentMapName,
+        getProfileId: () => this.profile._id,
+        isAdmin,
+      });
+      this.el.appendChild(this.mapBrowser.el);
+    }
 
     // Wire up map change callback so editor/chat update
     game.onMapChanged = (mapName) => {
@@ -93,7 +96,7 @@ export class GameShell {
         game.audio.unlock(); // ensure unlocked on click
         return game.audio.toggleMute();
       },
-      onOpenMaps: () => this.mapBrowser.toggle(),
+      onOpenMaps: isGuest ? undefined : () => this.mapBrowser?.toggle(),
     });
     this.el.appendChild(this.modeToggle.el);
 
@@ -109,37 +112,40 @@ export class GameShell {
     this.hud = new HUD(this.mode);
     this.el.appendChild(this.hud.el);
 
-    // Chat panel (play mode only)
-    this.chatPanel = new ChatPanel();
-    this.chatPanel.setContext(this.profile, game.currentMapName);
-    this.el.appendChild(this.chatPanel.el);
+    // --- Guests get a minimal play-only UI (no chat, editors, or character panel) ---
+    if (!isGuest) {
+      // Chat panel (play mode only)
+      this.chatPanel = new ChatPanel();
+      this.chatPanel.setContext(this.profile, game.currentMapName);
+      this.el.appendChild(this.chatPanel.el);
 
-    // Map editor panel (build mode only)
-    this.mapEditor = new MapEditorPanel();
-    this.mapEditor.setGame(game);
-    this.mapEditor.loadPlacedObjects(game.currentMapName);
-    this.mapEditor.loadPlacedItems(game.currentMapName);
-    this.el.appendChild(this.mapEditor.el);
+      // Map editor panel (build mode only)
+      this.mapEditor = new MapEditorPanel();
+      this.mapEditor.setGame(game);
+      this.mapEditor.loadPlacedObjects(game.currentMapName);
+      this.mapEditor.loadPlacedItems(game.currentMapName);
+      this.el.appendChild(this.mapEditor.el);
 
-    // Sprite editor panel (sprite-edit mode only)
-    this.spriteEditor = new SpriteEditorPanel();
-    this.spriteEditor.setGame(game);
-    this.el.appendChild(this.spriteEditor.el);
+      // Sprite editor panel (sprite-edit mode only)
+      this.spriteEditor = new SpriteEditorPanel();
+      this.spriteEditor.setGame(game);
+      this.el.appendChild(this.spriteEditor.el);
 
-    // NPC editor panel (npc-edit mode only)
-    this.npcEditor = new NpcEditorPanel();
-    this.npcEditor.setGame(game);
-    this.el.appendChild(this.npcEditor.el);
+      // NPC editor panel (npc-edit mode only)
+      this.npcEditor = new NpcEditorPanel();
+      this.npcEditor.setGame(game);
+      this.el.appendChild(this.npcEditor.el);
 
-    // Item editor panel (item-edit mode only)
-    this.itemEditor = new ItemEditorPanel();
-    this.itemEditor.setGame(game);
-    this.el.appendChild(this.itemEditor.el);
+      // Item editor panel (item-edit mode only)
+      this.itemEditor = new ItemEditorPanel();
+      this.itemEditor.setGame(game);
+      this.el.appendChild(this.itemEditor.el);
 
-    // Character panel (available in play mode)
-    this.characterPanel = new CharacterPanel();
-    this.characterPanel.setGame(game);
-    this.el.appendChild(this.characterPanel.el);
+      // Character panel (available in play mode)
+      this.characterPanel = new CharacterPanel();
+      this.characterPanel.setGame(game);
+      this.el.appendChild(this.characterPanel.el);
+    }
 
     this.syncVisibility();
   }

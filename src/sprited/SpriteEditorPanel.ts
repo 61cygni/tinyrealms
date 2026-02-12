@@ -42,6 +42,7 @@ export const NPC_SPRITE_SHEETS: SheetEntry[] = [
   { name: "Woman Med",     jsonUrl: "/assets/characters/woman-med.json" },
   { name: "Chicken",       jsonUrl: "/assets/characters/chicken.json" },
   { name: "Goat",          jsonUrl: "/assets/characters/goat.json" },
+  { name: "Grey Sheep",    jsonUrl: "/assets/characters/grey-sheep.json" },
 ];
 
 /** Raw sprite-sheet JSON shape (TexturePacker / PixiJS format) */
@@ -101,6 +102,14 @@ interface SavedSpriteDef {
   doorClosingAnimation?: string;
   doorOpenSoundUrl?: string;
   doorCloseSoundUrl?: string;
+  visibilityType?: "public" | "private" | "system";
+}
+
+function visibilityLabel(v?: "public" | "private" | "system"): string {
+  const type = v ?? "system";
+  if (type === "private") return "private";
+  if (type === "public") return "public";
+  return "system";
 }
 
 /** Available sound files for the picker */
@@ -158,6 +167,7 @@ export class SpriteEditorPanel {
   private scaleInput!: HTMLInputElement;
   private collidableCheck!: HTMLInputElement;
   private categorySelect!: HTMLSelectElement;
+  private visibilitySelect!: HTMLSelectElement;
   private saveBtn!: HTMLButtonElement;
   private deleteBtn!: HTMLButtonElement;
   private statusEl!: HTMLElement;
@@ -211,6 +221,7 @@ export class SpriteEditorPanel {
 
   setGame(game: Game) {
     this.game = game;
+    this.rebuildVisibilityOptions(this.visibilitySelect?.value as any || "private");
   }
 
   // =========================================================================
@@ -333,6 +344,17 @@ export class SpriteEditorPanel {
     }
     catField.append(catLabel, this.categorySelect);
     form.appendChild(catField);
+
+    // Visibility scope
+    const visField = document.createElement("div");
+    visField.className = "sprite-editor-field";
+    const visLabel = document.createElement("label");
+    visLabel.textContent = "Visibility";
+    this.visibilitySelect = document.createElement("select");
+    this.visibilitySelect.className = "sprite-editor-select";
+    this.rebuildVisibilityOptions();
+    visField.append(visLabel, this.visibilitySelect);
+    form.appendChild(visField);
 
     // Collidable checkbox
     const colField = document.createElement("div");
@@ -789,6 +811,7 @@ export class SpriteEditorPanel {
     this.anchorYInput.value = "1";
     this.collidableCheck.checked = false;
     this.categorySelect.value = "object";
+    this.rebuildVisibilityOptions("private");
     this.deleteBtn.style.display = "none";
     this.statusEl.textContent = "";
 
@@ -825,6 +848,7 @@ export class SpriteEditorPanel {
     this.anchorYInput.value = String(def.anchorY);
     this.collidableCheck.checked = def.isCollidable;
     this.categorySelect.value = def.category;
+    this.rebuildVisibilityOptions(def.visibilityType ?? "system");
     this.deleteBtn.style.display = "";
 
     // Sound fields
@@ -909,6 +933,7 @@ export class SpriteEditorPanel {
         scale: parseFloat(this.scaleInput.value) || 1,
         isCollidable: this.collidableCheck.checked,
         category,
+        visibilityType: this.visibilitySelect.value as any,
         frameWidth: this.loadedSheet.frameWidth,
         frameHeight: this.loadedSheet.frameHeight,
         // Sound fields
@@ -979,8 +1004,8 @@ export class SpriteEditorPanel {
     } catch (err: any) {
       console.error("Failed to save sprite definition:", err);
       const msg = err?.message || "Save failed!";
-      if (msg.includes("superuser")) {
-        this.showStatus("Save failed: superuser role required", true);
+      if (msg.includes("superuser") || msg.includes("Permission denied")) {
+        this.showStatus(`Save failed: ${msg}`, true);
       } else {
         this.showStatus(`Save failed: ${msg}`, true);
       }
@@ -1073,14 +1098,39 @@ export class SpriteEditorPanel {
       catEl.className = "sprite-editor-saved-cat";
       catEl.textContent = def.category;
 
+      const visEl = document.createElement("span");
+      visEl.className = `sprite-editor-saved-vis ${visibilityLabel(def.visibilityType)}`;
+      visEl.textContent = visibilityLabel(def.visibilityType);
+
       const editBtn = document.createElement("button");
       editBtn.className = "sprite-editor-btn small";
       editBtn.textContent = "Edit";
       editBtn.addEventListener("click", () => this.populateForm(def));
 
-      row.append(nameEl, catEl, editBtn);
+      row.append(nameEl, catEl, visEl, editBtn);
       this.savedListEl.appendChild(row);
     }
+  }
+
+  private rebuildVisibilityOptions(selected: "public" | "private" | "system" = "private") {
+    if (!this.visibilitySelect) return;
+    const isSuperuser = this.game?.profile.role === "superuser";
+    this.visibilitySelect.innerHTML = "";
+    const options: Array<{ value: "public" | "private" | "system"; label: string }> = [
+      { value: "private", label: "Private (only me)" },
+      { value: "public", label: "Public (all users)" },
+    ];
+    if (isSuperuser) {
+      options.push({ value: "system", label: "System (global built-in)" });
+    }
+    for (const opt of options) {
+      const el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      this.visibilitySelect.appendChild(el);
+    }
+    const canSelect = options.some((o) => o.value === selected);
+    this.visibilitySelect.value = canSelect ? selected : "private";
   }
 
   // =========================================================================

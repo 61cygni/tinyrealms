@@ -4,19 +4,59 @@ Strategy and roadmap for continuously evolving **Here** — a persistent multipl
 
 ---
 
+## Quick Guide: Backup and Restore World State
+
+Use this before risky schema/data changes so you always have a rollback point.
+
+### 1) Create a backup dump (recommended before big changes)
+
+```bash
+# Compact world backup (no tile arrays)
+npm run dump
+
+# Full world backup (includes map tile data)
+npm run dump:full
+
+# Optional helper with retention policy (default: 14 days)
+npm run backup:world -- --full --retention-days 30
+```
+
+Backups are written to `dumps/state-<timestamp>.json`.
+
+### 2) Restore from a dump if changes go bad
+
+```bash
+# Required for restore scripts
+export ADMIN_API_KEY='your-admin-api-key'
+
+# Plan restore first (no writes)
+npm run restore:world -- --in dumps/state-YYYY-MM-DDTHH-MM-SS.json --tables maps,spriteDefinitions,npcProfiles,mapObjects,itemDefs,worldItems,messages --dry-run
+
+# Apply restore (clears selected tables, then inserts)
+npm run restore:world -- --in dumps/state-YYYY-MM-DDTHH-MM-SS.json --tables maps,spriteDefinitions,npcProfiles,mapObjects,itemDefs,worldItems,messages --confirm
+```
+
+Notes:
+- Always run `--dry-run` first to verify plan/output.
+- Restore is **table-selective** and destructive for selected tables (clear + reinsert).
+- A verification report is written to `dumps/restore-report-<timestamp>.json`.
+
+---
+
 ## Table of Contents
 
-1. [Philosophy](#philosophy)
-2. [Architecture Assessment](#architecture-assessment)
-3. [How Convex Handles Live Deploys](#how-convex-handles-live-deploys)
-4. [Schema Evolution Strategy](#schema-evolution-strategy)
-5. [Safe Change Patterns](#safe-change-patterns)
-6. [Dangerous Change Patterns](#dangerous-change-patterns)
-7. [Known Risks & Mitigations](#known-risks--mitigations)
-8. [Recommended Refactors](#recommended-refactors)
-9. [Operational Runbook](#operational-runbook)
-10. [Operations Guide](#operations-guide)
-11. [Roadmap](#roadmap)
+1. [Quick Guide: Backup and Restore World State](#quick-guide-backup-and-restore-world-state)
+2. [Philosophy](#philosophy)
+3. [Architecture Assessment](#architecture-assessment)
+4. [How Convex Handles Live Deploys](#how-convex-handles-live-deploys)
+5. [Schema Evolution Strategy](#schema-evolution-strategy)
+6. [Safe Change Patterns](#safe-change-patterns)
+7. [Dangerous Change Patterns](#dangerous-change-patterns)
+8. [Known Risks & Mitigations](#known-risks--mitigations)
+9. [Recommended Refactors](#recommended-refactors)
+10. [Operational Runbook](#operational-runbook)
+11. [Operations Guide](#operations-guide)
+12. [Roadmap](#roadmap)
 
 ---
 

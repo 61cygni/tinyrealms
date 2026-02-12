@@ -1,6 +1,7 @@
 /**
  * Root application controller.
  * Flow: AuthScreen → ProfileScreen → Game
+ *       AuthScreen → Game (guest mode — read-only, no auth)
  */
 import type { ConvexClient } from "convex/browser";
 import { AuthScreen } from "./ui/AuthScreen.ts";
@@ -32,10 +33,31 @@ export class App {
 
   private showAuthScreen() {
     this.clear();
-    this.authScreen = new AuthScreen(() => {
-      this.showProfileScreen();
-    });
+    this.authScreen = new AuthScreen(
+      () => this.showProfileScreen(),
+      () => this.showGameAsGuest(),
+    );
     this.root.appendChild(this.authScreen.el);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Guest mode — skip auth + profile, use a synthetic read-only profile
+  // ---------------------------------------------------------------------------
+
+  private showGameAsGuest() {
+    const guestProfile: ProfileData = {
+      _id: "guest",
+      name: "Guest",
+      spriteUrl: "/assets/characters/guest.json",
+      color: "#8899aa",
+      role: "guest",
+      mapName: "Cozy Cabin",
+      stats: { hp: 100, maxHp: 100, atk: 0, def: 0, spd: 5, level: 1, xp: 0 },
+      items: [],
+      npcsChatted: [],
+      createdAt: Date.now(),
+    };
+    this.showGame(guestProfile);
   }
 
   // ---------------------------------------------------------------------------

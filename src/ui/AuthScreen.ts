@@ -14,10 +14,12 @@ export class AuthScreen {
   readonly el: HTMLElement;
   private statusEl: HTMLElement;
   private onAuthenticated: () => void;
+  private onGuestJoin: (() => void) | null;
   private destroyed = false;
 
-  constructor(onAuthenticated: () => void) {
+  constructor(onAuthenticated: () => void, onGuestJoin?: () => void) {
     this.onAuthenticated = onAuthenticated;
+    this.onGuestJoin = onGuestJoin ?? null;
 
     this.el = document.createElement("div");
     this.el.className = "auth-screen";
@@ -111,6 +113,23 @@ export class AuthScreen {
     card.appendChild(this.statusEl);
 
     this.el.appendChild(card);
+
+    // -----------------------------------------------------------------------
+    // Guest access — below the card
+    // -----------------------------------------------------------------------
+    if (this.onGuestJoin) {
+      const guestWrap = document.createElement("div");
+      guestWrap.className = "auth-guest-wrap";
+      const guestBtn = document.createElement("button");
+      guestBtn.className = "auth-guest-btn";
+      guestBtn.textContent = "or explore as a guest";
+      guestBtn.addEventListener("click", () => {
+        if (this.destroyed) return;
+        this.onGuestJoin?.();
+      });
+      guestWrap.appendChild(guestBtn);
+      this.el.appendChild(guestWrap);
+    }
 
     // Check for OAuth callback first, then existing session
     this.init();

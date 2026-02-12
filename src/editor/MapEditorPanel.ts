@@ -9,13 +9,14 @@ import "./MapEditor.css";
 import "./TilesetPicker.css";
 import "./LayerPanel.css";
 
-export type EditorTool = "paint" | "erase" | "collision" | "collision-erase" | "object" | "object-erase" | "npc" | "npc-erase" | "portal" | "portal-erase" | "label" | "item" | "item-erase";
+export type EditorTool = "paint" | "erase" | "collision" | "collision-erase" | "object" | "object-erase" | "npc" | "npc-erase" | "map" | "portal" | "portal-erase" | "label" | "label-erase" | "item" | "item-erase";
 const TOOLS: { key: EditorTool; label: string }[] = [
   { key: "paint",        label: "🖌 Paint" },
   { key: "collision",    label: "🚧 Collision" },
   { key: "object",       label: "📦 Object" },
   { key: "npc",          label: "🧑 NPC" },
   { key: "item",         label: "⚔️ Item" },
+  { key: "map",          label: "🗺 Map" },
   { key: "portal",       label: "🚪 Portal" },
   { key: "label",        label: "🏷 Label" },
 ];
@@ -28,6 +29,7 @@ const DELETE_OPTIONS: { key: EditorTool; label: string }[] = [
   { key: "npc-erase",        label: "🧑 NPC" },
   { key: "item-erase",       label: "⚔️ Item" },
   { key: "portal-erase",     label: "🚪 Portal" },
+  { key: "label-erase",      label: "🏷 Label" },
 ];
 
 /** Registry of available tilesets */
@@ -73,6 +75,7 @@ interface SpriteDef {
   _id: string;
   name: string;
   category: string;
+  visibilityType?: "public" | "private" | "system";
   spriteSheetUrl: string;
   defaultAnimation: string;
   frameWidth: number;
@@ -96,6 +99,10 @@ interface SpriteDef {
   onAnimation?: string;
   offAnimation?: string;
   onSoundUrl?: string;
+}
+
+function visibilityLabel(v?: "public" | "private" | "system"): "public" | "private" | "system" {
+  return (v ?? "system") as "public" | "private" | "system";
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +159,7 @@ export class MapEditorPanel {
   } = { name: "", targetMap: "", targetSpawn: "start1", direction: "", transition: "fade" };
   private portalPlacing = false; // true when in "click-to-place" mode
   private portalStart: { tx: number; ty: number } | null = null;
-  private availableMaps: { name: string }[] = [];
+  private availableMaps: { name: string; labelNames?: string[] }[] = [];
 
   // Label editor state
   private labelDraftName = "";
@@ -172,8 +179,15 @@ export class MapEditorPanel {
   private tilesetPickerEl!: HTMLElement;
   private objectPickerEl!: HTMLElement;
   private objectListEl!: HTMLElement;
+  private mapPickerEl!: HTMLElement;
+  private mapNameInput!: HTMLInputElement;
+  private mapMusicSelect!: HTMLSelectElement;
+  private mapCombatCheck!: HTMLInputElement;
+  private mapStatusSelect!: HTMLSelectElement;
   private portalPickerEl!: HTMLElement;
   private portalListEl!: HTMLElement;
+  private portalTargetMapSelect!: HTMLSelectElement;
+  private portalTargetSpawnSelect!: HTMLSelectElement;
   private labelPickerEl!: HTMLElement;
   private labelListEl!: HTMLElement;
   private gridBtn!: HTMLButtonElement;
@@ -344,6 +358,11 @@ export class MapEditorPanel {
     this.itemPickerEl.style.display = "none";
     panels.appendChild(this.itemPickerEl);
 
+    // Center: Map settings (shown for map tool)
+    this.mapPickerEl = this.buildMapPicker();
+    this.mapPickerEl.style.display = "none";
+    panels.appendChild(this.mapPickerEl);
+
     // Center: Portal picker (shown for portal tool)
     this.portalPickerEl = this.buildPortalPicker();
     this.portalPickerEl.style.display = "none";
@@ -512,7 +531,8 @@ export class MapEditorPanel {
     for (const def of nonNpcDefs) {
       const row = document.createElement("button");
       row.className = `object-list-item ${this.selectedSpriteDef?._id === def._id ? "active" : ""}`;
-      row.innerHTML = `<span class="object-list-name">${def.name}</span><span class="object-list-cat">${def.category}</span>`;
+      const vis = visibilityLabel(def.visibilityType);
+      row.innerHTML = `<span class="object-list-name">${def.name}</span><span class="object-list-cat">${def.category}</span><span class="object-list-vis ${vis}">${vis}</span>`;
       row.addEventListener("click", () => {
         this.selectedSpriteDef = def;
         this.tileInfoEl.textContent = `Obj: ${def.name}`;
@@ -564,7 +584,7 @@ export class MapEditorPanel {
     if (npcDefs.length === 0) {
       const empty = document.createElement("div");
       empty.style.cssText = "color:var(--text-muted);font-size:12px;padding:12px;font-style:italic;";
-      empty.textContent = "No NPC sprites yet. Create some in the Sprite Editor with category 'NPC'!";
+      empty.textContent = "No NPC sprites yet. Create some in the NPC Editor → NPC Sprites tab!";
       this.npcListEl.appendChild(empty);
       return;
     }
@@ -572,7 +592,8 @@ export class MapEditorPanel {
     for (const def of npcDefs) {
       const row = document.createElement("button");
       row.className = `object-list-item ${this.selectedSpriteDef?._id === def._id ? "active" : ""}`;
-      row.innerHTML = `<span class="object-list-name">${def.name}</span><span class="object-list-cat">npc</span>`;
+      const vis = visibilityLabel(def.visibilityType);
+      row.innerHTML = `<span class="object-list-name">${def.name}</span><span class="object-list-cat">npc</span><span class="object-list-vis ${vis}">${vis}</span>`;
       row.addEventListener("click", () => {
         this.selectedSpriteDef = def;
         this.tileInfoEl.textContent = `NPC: ${def.name}`;
@@ -1119,13 +1140,15 @@ export class MapEditorPanel {
     const isObjTool = t === "object" || t === "object-erase";
     const isNpcTool = t === "npc" || t === "npc-erase";
     const isItemTool = t === "item" || t === "item-erase";
+    const isMap = t === "map";
     const isPortal = t === "portal";
     const isLabel = t === "label";
-    const hideDefault = isObjTool || isNpcTool || isItemTool || isPortal || isLabel;
+    const hideDefault = isObjTool || isNpcTool || isItemTool || isMap || isPortal || isLabel;
     this.tilesetPickerEl.style.display = hideDefault ? "none" : "";
     this.objectPickerEl.style.display = isObjTool ? "" : "none";
     this.npcPickerEl.style.display = isNpcTool ? "" : "none";
     this.itemPickerEl.style.display = isItemTool ? "" : "none";
+    this.mapPickerEl.style.display = isMap ? "" : "none";
     this.portalPickerEl.style.display = isPortal ? "" : "none";
     this.labelPickerEl.style.display = isLabel ? "" : "none";
 
@@ -1141,8 +1164,12 @@ export class MapEditorPanel {
       this.loadItemDefs();
     }
 
+    if (isMap) {
+      this.syncMapSettingsUI();
+    }
+
     if (isPortal) {
-      this.refreshPortalList();
+      void this.refreshPortalList();
       this.loadAvailableMaps();
     }
 
@@ -1249,7 +1276,7 @@ export class MapEditorPanel {
       if (!this.isPainting || game.mode !== "build") return;
       // Only allow drag-paint for tile tools, not object/npc/item/portal/label
       const noDrag: EditorTool[] = ["object", "object-erase", "npc", "npc-erase",
-        "item", "item-erase", "portal", "portal-erase", "label"];
+        "item", "item-erase", "map", "portal", "portal-erase", "label"];
       if (!noDrag.includes(this.tool)) {
         this.handleCanvasAction(e, game, canvas);
       }
@@ -1375,8 +1402,13 @@ export class MapEditorPanel {
       }
     } else if (this.tool === "item-erase") {
       this.removeItemAt(worldX, worldY);
+    } else if (this.tool === "map") {
+      // Map settings are edited in the side panel only.
+      return;
     } else if (this.tool === "portal-erase") {
       this.removePortalAt(worldX, worldY);
+    } else if (this.tool === "label-erase") {
+      this.removeLabelAt(worldX, worldY);
     } else {
       this.paintTileAt(worldX, worldY, game);
     }
@@ -1532,23 +1564,38 @@ export class MapEditorPanel {
   // Portal editor
   // ===========================================================================
 
-  private buildPortalPicker(): HTMLElement {
+  private buildMapPicker(): HTMLElement {
     const picker = document.createElement("div");
-    picker.className = "tileset-picker"; // reuse layout
+    picker.className = "tileset-picker";
 
     const header = document.createElement("div");
     header.className = "tileset-picker-header";
     const label = document.createElement("div");
     label.className = "tileset-picker-label";
-    label.textContent = "Portals & Map Settings";
+    label.textContent = "Map Settings";
     header.appendChild(label);
     picker.appendChild(header);
 
-    // --- Map settings section ---
-    const settings = document.createElement("div");
-    settings.style.cssText = "padding:8px;display:flex;flex-direction:column;gap:6px;font-size:12px;border-bottom:1px solid #333;";
+    const form = document.createElement("div");
+    form.style.cssText = "padding:8px;display:flex;flex-direction:column;gap:6px;font-size:12px;";
 
-    // Music select
+    const nameRow = document.createElement("div");
+    nameRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const nameLabel = document.createElement("span");
+    nameLabel.textContent = "Map Name:";
+    nameLabel.style.minWidth = "80px";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "Map name";
+    nameInput.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    nameInput.addEventListener("input", () => {
+      const mapData = this.game?.mapRenderer.getMapData();
+      if (mapData) mapData.name = nameInput.value.trim() || mapData.name;
+    });
+    this.mapNameInput = nameInput;
+    nameRow.append(nameLabel, nameInput);
+    form.appendChild(nameRow);
+
     const musicRow = document.createElement("div");
     musicRow.style.cssText = "display:flex;gap:4px;align-items:center;";
     const musicLabel = document.createElement("span");
@@ -1578,10 +1625,10 @@ export class MapEditorPanel {
       const mapData = this.game?.mapRenderer.getMapData();
       if (mapData) mapData.musicUrl = musicSelect.value || undefined;
     });
+    this.mapMusicSelect = musicSelect;
     musicRow.append(musicLabel, musicSelect);
-    settings.appendChild(musicRow);
+    form.appendChild(musicRow);
 
-    // Combat toggle
     const combatRow = document.createElement("div");
     combatRow.style.cssText = "display:flex;gap:4px;align-items:center;";
     const combatLabel = document.createElement("span");
@@ -1593,10 +1640,10 @@ export class MapEditorPanel {
       const mapData = this.game?.mapRenderer.getMapData();
       if (mapData) mapData.combatEnabled = combatCheck.checked;
     });
+    this.mapCombatCheck = combatCheck;
     combatRow.append(combatLabel, combatCheck);
-    settings.appendChild(combatRow);
+    form.appendChild(combatRow);
 
-    // Status select
     const statusRow = document.createElement("div");
     statusRow.style.cssText = "display:flex;gap:4px;align-items:center;";
     const statusLabel = document.createElement("span");
@@ -1614,29 +1661,31 @@ export class MapEditorPanel {
       const mapData = this.game?.mapRenderer.getMapData();
       if (mapData) mapData.status = statusSelect.value;
     });
+    this.mapStatusSelect = statusSelect;
     statusRow.append(statusLabel, statusSelect);
-    settings.appendChild(statusRow);
+    form.appendChild(statusRow);
 
-    // When portal tool becomes visible, sync settings from current map
-    const syncSettings = () => {
-      const mapData = this.game?.mapRenderer.getMapData();
-      if (mapData) {
-        musicSelect.value = mapData.musicUrl ?? "";
-        combatCheck.checked = mapData.combatEnabled ?? false;
-        statusSelect.value = mapData.status ?? "published";
-      }
-    };
-    // Use MutationObserver to detect when portal picker becomes visible
-    const observer = new MutationObserver(() => {
-      if (this.portalPickerEl.style.display !== "none") {
-        syncSettings();
-      }
-    });
-    observer.observe(picker, { attributes: true, attributeFilter: ["style"] });
-    // Also sync on first show
-    setTimeout(syncSettings, 100);
+    const info = document.createElement("div");
+    info.style.cssText = "margin-top:6px;padding:6px 8px;background:#1a1a2e;border:1px solid #333;border-radius:4px;font-size:11px;color:#aaa;line-height:1.4;";
+    info.textContent = "Map settings are saved when you click Save.";
+    form.appendChild(info);
 
-    picker.appendChild(settings);
+    picker.appendChild(form);
+
+    return picker;
+  }
+
+  private buildPortalPicker(): HTMLElement {
+    const picker = document.createElement("div");
+    picker.className = "tileset-picker"; // reuse layout
+
+    const header = document.createElement("div");
+    header.className = "tileset-picker-header";
+    const label = document.createElement("div");
+    label.className = "tileset-picker-label";
+    label.textContent = "Portals";
+    header.appendChild(label);
+    picker.appendChild(header);
 
     // --- New portal form ---
     const form = document.createElement("div");
@@ -1653,12 +1702,26 @@ export class MapEditorPanel {
     mapLabel.style.minWidth = "80px";
     const mapSelect = document.createElement("select");
     mapSelect.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
-    mapSelect.id = "portal-target-map-select";
-    mapSelect.addEventListener("change", () => { this.portalDraft.targetMap = mapSelect.value; });
+    mapSelect.addEventListener("change", () => {
+      this.portalDraft.targetMap = mapSelect.value;
+      void this.refreshPortalTargetSpawnOptions(mapSelect.value);
+    });
+    this.portalTargetMapSelect = mapSelect;
     mapRow.append(mapLabel, mapSelect);
 
-    // Spawn label
-    const spawnRow = this.portalFormRow("Spawn Label:", "text", "start1", (v) => { this.portalDraft.targetSpawn = v; });
+    // Spawn label (from target map labels)
+    const spawnRow = document.createElement("div");
+    spawnRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const spawnLabel = document.createElement("span");
+    spawnLabel.textContent = "Target Label:";
+    spawnLabel.style.minWidth = "80px";
+    const spawnSelect = document.createElement("select");
+    spawnSelect.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    spawnSelect.addEventListener("change", () => {
+      this.portalDraft.targetSpawn = spawnSelect.value || "start1";
+    });
+    this.portalTargetSpawnSelect = spawnSelect;
+    spawnRow.append(spawnLabel, spawnSelect);
 
     // Direction
     const dirRow = document.createElement("div");
@@ -1720,22 +1783,75 @@ export class MapEditorPanel {
     return row;
   }
 
+  private syncMapSettingsUI() {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData) return;
+    if (this.mapNameInput) this.mapNameInput.value = mapData.name ?? "";
+    if (this.mapMusicSelect) this.mapMusicSelect.value = mapData.musicUrl ?? "";
+    if (this.mapCombatCheck) this.mapCombatCheck.checked = mapData.combatEnabled ?? false;
+    if (this.mapStatusSelect) this.mapStatusSelect.value = mapData.status ?? "published";
+  }
+
+  private async refreshPortalTargetSpawnOptions(targetMapName: string) {
+    if (!this.portalTargetSpawnSelect) return;
+    let labels: string[] = [];
+    const targetMap = this.availableMaps.find((m) => m.name === targetMapName);
+    if (targetMap?.labelNames && targetMap.labelNames.length > 0) {
+      labels = targetMap.labelNames.filter(Boolean);
+    } else if (targetMapName) {
+      // Fallback: fetch latest labels from the map doc directly.
+      // Some older maps may not have summaries populated as expected.
+      try {
+        const convex = getConvexClient();
+        const map = await convex.query(api.maps.getByName, { name: targetMapName });
+        labels = Array.isArray((map as any)?.labels)
+          ? (map as any).labels
+              .map((l: any) => l?.name)
+              .filter((n: unknown): n is string => typeof n === "string" && n.length > 0)
+          : [];
+      } catch (err) {
+        console.warn(`Failed to load labels for map "${targetMapName}":`, err);
+      }
+    }
+
+    this.portalTargetSpawnSelect.innerHTML = "";
+    const options = labels.length > 0 ? labels : ["start1"];
+    for (const label of options) {
+      const opt = document.createElement("option");
+      opt.value = label;
+      opt.textContent = label;
+      this.portalTargetSpawnSelect.appendChild(opt);
+    }
+    const preferred = options.includes(this.portalDraft.targetSpawn) ? this.portalDraft.targetSpawn : options[0];
+    this.portalTargetSpawnSelect.value = preferred;
+    this.portalDraft.targetSpawn = preferred;
+  }
+
   private async loadAvailableMaps() {
     try {
       const convex = getConvexClient();
       const maps = await convex.query(api.maps.listSummaries, {});
-      this.availableMaps = maps.map((m: any) => ({ name: m.name }));
-      const select = this.portalPickerEl.querySelector("#portal-target-map-select") as HTMLSelectElement;
-      if (select) {
-        select.innerHTML = "";
+      this.availableMaps = maps.map((m: any) => ({
+        name: m.name,
+        labelNames: Array.isArray(m.labelNames) ? m.labelNames : [],
+      }));
+      if (this.portalTargetMapSelect) {
+        this.portalTargetMapSelect.innerHTML = "";
         for (const m of this.availableMaps) {
           const opt = document.createElement("option");
           opt.value = m.name;
           opt.textContent = m.name;
-          select.appendChild(opt);
+          this.portalTargetMapSelect.appendChild(opt);
         }
         if (this.availableMaps.length > 0) {
-          this.portalDraft.targetMap = this.availableMaps[0].name;
+          const preferred = this.availableMaps.some((m) => m.name === this.portalDraft.targetMap)
+            ? this.portalDraft.targetMap
+            : this.availableMaps[0].name;
+          this.portalTargetMapSelect.value = preferred;
+          this.portalDraft.targetMap = preferred;
+          void this.refreshPortalTargetSpawnOptions(preferred);
+        } else {
+          void this.refreshPortalTargetSpawnOptions("");
         }
       }
     } catch (err) {
@@ -1743,10 +1859,46 @@ export class MapEditorPanel {
     }
   }
 
-  private refreshPortalList() {
+  private async refreshPortalList() {
     if (!this.portalListEl) return;
     const mapData = this.game?.mapRenderer.getMapData();
-    const portals = mapData?.portals ?? [];
+    let portals = mapData?.portals ?? [];
+
+    console.log(
+      `[PortalList] local mapData portals: ${portals.length}, ` +
+      `mapData.name="${mapData?.name}", game.currentMapName="${this.game?.currentMapName}", ` +
+      `game exists=${!!this.game}, mapData exists=${!!mapData}`,
+    );
+
+    // Fallback: if local map cache has no portals, query Convex directly for current map.
+    // This handles cases where the client loaded a stale/static map snapshot.
+    if (portals.length === 0 && this.game) {
+      const candidateNames = Array.from(
+        new Set([mapData?.name, this.game.currentMapName].filter((n): n is string => !!n && n.length > 0)),
+      );
+      console.log(`[PortalList] fallback — querying Convex for maps: ${candidateNames.join(", ")}`);
+      for (const name of candidateNames) {
+        try {
+          const convex = getConvexClient();
+          const saved = await convex.query(api.maps.getByName, { name });
+          const savedPortals = Array.isArray((saved as any)?.portals) ? (saved as any).portals : [];
+          console.log(`[PortalList] Convex "${name}": ${savedPortals.length} portals`, savedPortals);
+          if (savedPortals.length > 0) {
+            portals = savedPortals;
+            if (mapData) {
+              mapData.portals = savedPortals as any;
+            }
+            this.game.currentPortals = savedPortals as any;
+            this.game.mapRenderer.renderPortalOverlay();
+            break;
+          }
+        } catch (err) {
+          console.warn(`Failed to load portals for "${name}":`, err);
+        }
+      }
+    }
+
+    console.log(`[PortalList] final portal count: ${portals.length}`);
 
     if (portals.length === 0) {
       this.portalListEl.innerHTML = '<div style="color:#888;font-size:12px;">No portals yet</div>';
@@ -1771,7 +1923,7 @@ export class MapEditorPanel {
         if (mapData && mapData.portals) {
           mapData.portals.splice(i, 1);
           if (this.game) this.game.currentPortals = mapData.portals;
-          this.refreshPortalList();
+          void this.refreshPortalList();
           this.game?.mapRenderer.renderPortalOverlay();
         }
       });
@@ -1827,7 +1979,7 @@ export class MapEditorPanel {
       this.portalPlacing = false;
       this.portalStart = null;
       this.tileInfoEl.textContent = `Portal "${portal.name}" placed at (${x},${y}) ${w}x${h}`;
-      this.refreshPortalList();
+      void this.refreshPortalList();
       // Update the visual overlay + hide ghost
       this.game?.mapRenderer.renderPortalOverlay();
       this.game?.mapRenderer.hidePortalGhost();
@@ -1994,6 +2146,32 @@ export class MapEditorPanel {
       this.game?.mapRenderer.renderLabelOverlay();
       this.game?.mapRenderer.hideLabelGhost();
     }
+  }
+
+  /** Remove a label at the clicked tile position */
+  private removeLabelAt(worldX: number, worldY: number) {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData || !mapData.labels) return;
+
+    const tileX = Math.floor(worldX / mapData.tileWidth);
+    const tileY = Math.floor(worldY / mapData.tileHeight);
+
+    // Find a label whose bounding box contains this tile
+    const idx = mapData.labels.findIndex((l) => {
+      const lw = (l as any).width ?? 1;
+      const lh = (l as any).height ?? 1;
+      return tileX >= l.x && tileX < l.x + lw && tileY >= l.y && tileY < l.y + lh;
+    });
+
+    if (idx < 0) {
+      this.tileInfoEl.textContent = `No label at tile (${tileX},${tileY})`;
+      return;
+    }
+
+    const removed = mapData.labels.splice(idx, 1)[0];
+    this.tileInfoEl.textContent = `Removed label "${removed.name}"`;
+    this.refreshLabelList();
+    this.game?.mapRenderer.renderLabelOverlay();
   }
 
   private async saveAll() {
@@ -2175,6 +2353,8 @@ export class MapEditorPanel {
       if (this.tool === "object" || this.tool === "object-erase" ||
           this.tool === "npc" || this.tool === "npc-erase") {
         this.loadSpriteDefs();
+      } else if (this.tool === "map") {
+        this.syncMapSettingsUI();
       }
       this.updateGhostForCurrentSelection();
     } else {

@@ -139,8 +139,13 @@ export default defineSchema({
     doorClosingAnimation: v.optional(v.string()), // transition: open → closed (plays once)
     doorOpenSoundUrl: v.optional(v.string()),    // one-shot sound when door opens
     doorCloseSoundUrl: v.optional(v.string()),   // one-shot sound when door closes
+    visibilityType: v.optional(v.string()),      // "public" | "private" | "system" (legacy undefined => system)
+    createdByUser: v.optional(v.id("users")),    // owner user for private/public assets
     updatedAt: v.number(),
-  }).index("by_name", ["name"]),
+  })
+    .index("by_name", ["name"])
+    .index("by_visibilityType", ["visibilityType"])
+    .index("by_createdByUser", ["createdByUser"]),
 
   // ---------------------------------------------------------------------------
   // NPC profiles (identity, backstory, personality — for LLM feeding)
@@ -178,10 +183,14 @@ export default defineSchema({
       quantity: v.number(),
     }))),
     tags: v.optional(v.array(v.string())), // general-purpose tags (e.g. "shopkeeper", "quest-giver")
+    visibilityType: v.optional(v.string()), // "public" | "private" | "system" (legacy undefined => system)
+    createdByUser: v.optional(v.id("users")), // owner user for private/public NPC profiles
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
-    .index("by_spriteDefName", ["spriteDefName"]),
+    .index("by_spriteDefName", ["spriteDefName"])
+    .index("by_visibilityType", ["visibilityType"])
+    .index("by_createdByUser", ["createdByUser"]),
 
   // ---------------------------------------------------------------------------
   // Map objects (sprite instances placed on a map)
@@ -479,8 +488,13 @@ export default defineSchema({
     lore: v.optional(v.string()),           // extended lore text
     pickupSoundUrl: v.optional(v.string()), // one-shot SFX played when picked up
     createdBy: v.optional(v.id("profiles")),
+    visibilityType: v.optional(v.string()), // "public" | "private" | "system" (legacy undefined => system)
+    createdByUser: v.optional(v.id("users")), // owner user for private/public assets
     updatedAt: v.number(),
-  }).index("by_name", ["name"]),
+  })
+    .index("by_name", ["name"])
+    .index("by_visibilityType", ["visibilityType"])
+    .index("by_createdByUser", ["createdByUser"]),
 
   // ---------------------------------------------------------------------------
   // World items (items placed on maps — can be picked up by players)
