@@ -16,6 +16,7 @@ const TICK_MS = 1500; // server tick interval (ms) — was 500ms, increased to r
 const IDLE_MIN_MS = 3000; // minimum idle pause before next wander
 const IDLE_MAX_MS = 8000; // maximum idle pause
 const STALE_THRESHOLD_MS = TICK_MS * 4; // if no tick in this long, loop is dead
+const AGGRO_FOLLOW_STOP_DISTANCE_PX = 42; // don't overlap target while chasing
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -25,10 +26,12 @@ const STALE_THRESHOLD_MS = TICK_MS * 4; // if no tick in this long, loop is dead
 export const listByMap = query({
   args: { mapName: v.string() },
   handler: async (ctx, { mapName }) => {
-    return await ctx.db
+    const now = Date.now();
+    const all = await ctx.db
       .query("npcState")
       .withIndex("by_map", (q) => q.eq("mapName", mapName))
       .collect();
+    return all.filter((s) => s.respawnAt == null || s.respawnAt <= now);
   },
 });
 
@@ -45,8 +48,105 @@ export const tick = internalMutation({
 
     const now = Date.now();
     const dt = TICK_MS / 1000; // seconds per tick
+    const allPresence = await ctx.db.query("presence").collect();
+    const presenceByProfileId = new Map(
+      allPresence.map((p) => [String(p.profileId), p]),
+    );
+    const allProfiles = await ctx.db.query("profiles").collect();
+    const profileById = new Map(allProfiles.map((p) => [String(p._id), p]));
 
     for (const npc of allNpcs) {
+      if (npc.respawnAt != null) {
+        if (now >= npc.respawnAt) {
+          const restoredHp = Math.max(1, npc.maxHp ?? npc.currentHp ?? 20);
+          await ctx.db.patch(npc._id, {
+            x: npc.spawnX,
+            y: npc.spawnY,
+            vx: 0,
+            vy: 0,
+            targetX: undefined,
+            targetY: undefined,
+            idleUntil: now + IDLE_MIN_MS,
+            currentHp: restoredHp,
+            maxHp: restoredHp,
+            defeatedAt: undefined,
+            respawnAt: undefined,
+            lastHitAt: undefined,
+            aggroTargetProfileId: undefined,
+            aggroUntil: undefined,
+            lastTick: now,
+          });
+        }
+        continue;
+      }
+
+      // --- Aggro follow logic ---
+      let chaseTargetX: number | undefined;
+      let chaseTargetY: number | undefined;
+      if (npc.aggroTargetProfileId != null) {
+        if (npc.aggroUntil == null || npc.aggroUntil <= now) {
+          await ctx.db.patch(npc._id, {
+            aggroTargetProfileId: undefined,
+            aggroUntil: undefined,
+          });
+        } else {
+          const targetId = String(npc.aggroTargetProfileId);
+          const live = presenceByProfileId.get(targetId);
+          const liveOnSameMap =
+            live != null && (live.mapName ?? "") === npc.mapName;
+          if (liveOnSameMap) {
+            chaseTargetX = live!.x;
+            chaseTargetY = live!.y;
+          } else {
+            const profile = profileById.get(targetId);
+            const profileOnSameMap =
+              profile != null &&
+              (profile.mapName ?? "") === npc.mapName &&
+              typeof profile.x === "number" &&
+              typeof profile.y === "number";
+            if (profileOnSameMap) {
+              chaseTargetX = Number(profile!.x);
+              chaseTargetY = Number(profile!.y);
+            }
+          }
+        }
+      }
+
+      if (chaseTargetX != null && chaseTargetY != null) {
+        const dx = chaseTargetX - npc.x;
+        const dy = chaseTargetY - npc.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist <= AGGRO_FOLLOW_STOP_DISTANCE_PX) {
+          // Close enough: stop and face target, don't wander while aggroed.
+          const direction =
+            Math.abs(dx) > Math.abs(dy)
+              ? dx > 0
+                ? "right"
+                : "left"
+              : dy > 0
+                ? "down"
+                : "up";
+          if (
+            npc.vx !== 0 ||
+            npc.vy !== 0 ||
+            npc.targetX != null ||
+            npc.targetY != null ||
+            npc.direction !== direction
+          ) {
+            await ctx.db.patch(npc._id, {
+              vx: 0,
+              vy: 0,
+              targetX: undefined,
+              targetY: undefined,
+              idleUntil: undefined,
+              direction,
+              lastTick: now,
+            });
+          }
+          continue;
+        }
+      }
+
       // --- Idle check ---
       if (npc.idleUntil && now < npc.idleUntil) {
         // Still pausing — only patch if velocity needs zeroing (skip no-op writes)
@@ -60,6 +160,12 @@ export const tick = internalMutation({
       // --- Pick a new target if we don't have one ---
       let targetX = npc.targetX;
       let targetY = npc.targetY;
+
+      // Aggro takes priority over wander.
+      if (chaseTargetX != null && chaseTargetY != null) {
+        targetX = chaseTargetX;
+        targetY = chaseTargetY;
+      }
 
       if (targetX == null || targetY == null) {
         const angle = Math.random() * Math.PI * 2;
@@ -192,6 +298,13 @@ export const syncMap = internalMutation({
           vy: 0,
           speed: def?.npcSpeed ?? 30,
           wanderRadius: def?.npcWanderRadius ?? 60,
+          currentHp: undefined,
+          maxHp: undefined,
+          defeatedAt: undefined,
+          respawnAt: undefined,
+          lastHitAt: undefined,
+          aggroTargetProfileId: undefined,
+          aggroUntil: undefined,
           lastTick: now,
         });
       }

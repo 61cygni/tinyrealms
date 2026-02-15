@@ -5,16 +5,11 @@
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { ProfileData } from "../engine/types.ts";
+import { PROFILE_SPRITE_OPTIONS } from "../config/spritesheet-config.ts";
 import "./ProfileScreen.css";
 
 // Available character sprites the player can pick from
-const SPRITE_OPTIONS = [
-  { label: "Villager 1", url: "/assets/characters/villager2.json" },
-  { label: "Villager 2", url: "/assets/characters/villager3.json" },
-  { label: "Villager 3", url: "/assets/characters/villager4.json" },
-  { label: "Villager 4", url: "/assets/characters/villager5.json" },
-  { label: "Woman", url: "/assets/characters/woman-med.json" },
-];
+const SPRITE_OPTIONS = PROFILE_SPRITE_OPTIONS;
 
 const PROFILE_COLORS = [
   "#6c5ce7", "#e74c3c", "#2ecc71", "#f39c12", "#00cec9", "#fd79a8",

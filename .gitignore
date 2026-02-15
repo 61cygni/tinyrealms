@@ -30,3 +30,6 @@ dumps/
 # Local scratch/secrets
 Notes.txt
 .env.local.bak
+
+# secrets
+.env.convex

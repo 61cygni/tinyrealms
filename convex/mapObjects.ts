@@ -3,6 +3,40 @@ import { mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireMapEditor } from "./lib/requireMapEditor";
 
+function slugifyInstanceName(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+async function generateUniqueNpcInstanceName(
+  ctx: any,
+  baseInput: string,
+  usedObjectNames?: Set<string>,
+  usedProfileNames?: Set<string>,
+): Promise<string> {
+  const base = slugifyInstanceName(baseInput) || "npc";
+  const objectNames = usedObjectNames ?? new Set(
+    (await ctx.db.query("mapObjects").collect())
+      .map((o: any) => o.instanceName)
+      .filter((v: unknown): v is string => typeof v === "string" && v.length > 0),
+  );
+  const profileNames = usedProfileNames ?? new Set(
+    (await ctx.db.query("npcProfiles").collect()).map((p: any) => String(p.name)),
+  );
+
+  let candidate = base;
+  let suffix = 2;
+  while (objectNames.has(candidate) || profileNames.has(candidate)) {
+    candidate = `${base}-${suffix++}`;
+  }
+  objectNames.add(candidate);
+  return candidate;
+}
+
 /** List all objects on a given map */
 export const listByMap = query({
   args: { mapName: v.string() },
@@ -28,8 +62,17 @@ export const place = mutation({
   },
   handler: async (ctx, { profileId, ...args }) => {
     await requireMapEditor(ctx, profileId, args.mapName);
+    let instanceName: string | undefined = undefined;
+    const def = await ctx.db
+      .query("spriteDefinitions")
+      .withIndex("by_name", (q) => q.eq("name", args.spriteDefName))
+      .first();
+    if (def?.category === "npc") {
+      instanceName = await generateUniqueNpcInstanceName(ctx, args.spriteDefName);
+    }
     const id = await ctx.db.insert("mapObjects", {
       ...args,
+      instanceName,
       updatedAt: Date.now(),
     });
     await ctx.scheduler.runAfter(0, internal.npcEngine.syncMap, { mapName: args.mapName });
@@ -121,6 +164,15 @@ export const bulkSave = mutation({
     const keptIds = new Set<string>();
 
     const now = Date.now();
+    const usedObjectNames = new Set(
+      existing
+        .map((o) => o.instanceName)
+        .filter((v): v is string => typeof v === "string" && v.length > 0),
+    );
+    const allProfiles = await ctx.db.query("npcProfiles").collect();
+    const usedProfileNames = new Set(allProfiles.map((p) => String((p as any).name)));
+    const allDefs = await ctx.db.query("spriteDefinitions").collect();
+    const defByName = new Map(allDefs.map((d) => [d.name, d]));
 
     for (const obj of objects) {
       const { existingId, ...fields } = obj;
@@ -134,9 +186,20 @@ export const bulkSave = mutation({
         });
       } else {
         // New object
+        let instanceName = (fields as any).instanceName as string | undefined;
+        const def = defByName.get(obj.spriteDefName);
+        if (def?.category === "npc" && !instanceName) {
+          instanceName = await generateUniqueNpcInstanceName(
+            ctx,
+            obj.spriteDefName,
+            usedObjectNames,
+            usedProfileNames,
+          );
+        }
         await ctx.db.insert("mapObjects", {
           mapName,
           ...fields,
+          ...(instanceName ? { instanceName } : {}),
           updatedAt: now,
         });
       }

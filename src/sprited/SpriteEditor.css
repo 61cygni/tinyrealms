@@ -109,12 +109,14 @@
 }
 
 .sprite-editor-preview-wrap {
-  height: 160px;
+  min-height: 160px;
+  max-height: 300px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
+  padding: 8px;
   background: var(--bg-secondary);
   border-top: 1px solid var(--border);
 }
@@ -128,8 +130,9 @@
 
 .sprite-editor-preview-canvas {
   image-rendering: pixelated;
-  width: 128px;
-  height: 128px;
+  width: 256px;
+  height: 256px;
+  max-width: 100%;
   background: repeating-conic-gradient(
     #222 0% 25%, #2a2a2a 0% 50%
   ) 50% / 16px 16px;

@@ -47,6 +47,9 @@ export class SpritedTool {
 
   // debounce timer for W/H reslice
   private resliceTimer = 0;
+  private targetSizeTimer = 0;
+  private lastResliceW = 0;
+  private lastResliceH = 0;
 
   // DOM refs
   private tileGridEl!: HTMLDivElement;
@@ -113,8 +116,6 @@ export class SpritedTool {
     this.tileWInput.value = String(this.gridTileW);
     this.tileWInput.min = "1";
     this.tileWInput.addEventListener("input", () => this.scheduleReslice());
-    this.tileWInput.addEventListener("change", () => this.scheduleReslice());
-    this.tileWInput.addEventListener("keyup", () => this.scheduleReslice());
     row2.appendChild(this.tileWInput);
 
     row2.appendChild(elText("span", "H:", "st-label"));
@@ -123,8 +124,6 @@ export class SpritedTool {
     this.tileHInput.value = String(this.gridTileH);
     this.tileHInput.min = "1";
     this.tileHInput.addEventListener("input", () => this.scheduleReslice());
-    this.tileHInput.addEventListener("change", () => this.scheduleReslice());
-    this.tileHInput.addEventListener("keyup", () => this.scheduleReslice());
     row2.appendChild(this.tileHInput);
     loadArea.appendChild(row2);
 
@@ -224,30 +223,14 @@ export class SpritedTool {
     this.targetWInput.type = "number";
     this.targetWInput.placeholder = "auto";
     this.targetWInput.min = "1";
-    const onTargetSizeChanged = () => {
-      this.targetFrameW = parseInt(this.targetWInput.value) || 0;
-      this.updateExportInfo();
-      this.renderPreview();
-      this.startPreview();
-    };
-    this.targetWInput.addEventListener("input", onTargetSizeChanged);
-    this.targetWInput.addEventListener("change", onTargetSizeChanged);
-    this.targetWInput.addEventListener("keyup", onTargetSizeChanged);
+    this.targetWInput.addEventListener("input", () => this.scheduleTargetSizeUpdate());
     targetRow.appendChild(this.targetWInput);
     targetRow.appendChild(elText("span", "H:", "st-label"));
     this.targetHInput = el("input", "st-input st-input-small") as HTMLInputElement;
     this.targetHInput.type = "number";
     this.targetHInput.placeholder = "auto";
     this.targetHInput.min = "1";
-    const onTargetHeightChanged = () => {
-      this.targetFrameH = parseInt(this.targetHInput.value) || 0;
-      this.updateExportInfo();
-      this.renderPreview();
-      this.startPreview();
-    };
-    this.targetHInput.addEventListener("input", onTargetHeightChanged);
-    this.targetHInput.addEventListener("change", onTargetHeightChanged);
-    this.targetHInput.addEventListener("keyup", onTargetHeightChanged);
+    this.targetHInput.addEventListener("input", () => this.scheduleTargetSizeUpdate());
     targetRow.appendChild(this.targetHInput);
     targetField.appendChild(targetRow);
     exportSection.appendChild(targetField);
@@ -285,6 +268,8 @@ export class SpritedTool {
       const img = new Image();
       img.onload = () => {
         this.gridImage = img;
+        this.lastResliceW = 0;
+        this.lastResliceH = 0;
         this.gridTileW = Math.max(1, parseInt(this.tileWInput.value) || 32);
         this.gridTileH = Math.max(1, parseInt(this.tileHInput.value) || 32);
         this.fileNameDisplay.textContent = file.name;
@@ -295,41 +280,79 @@ export class SpritedTool {
     reader.readAsDataURL(file);
   }
 
-  /** Debounced reslice — waits 200ms after the last input before re-slicing */
+  /** Debounced reslice — waits 400ms after the last input before re-slicing */
   private scheduleReslice() {
     if (this.resliceTimer) clearTimeout(this.resliceTimer);
     this.resliceTimer = window.setTimeout(() => {
-      this.gridTileW = Math.max(1, parseInt(this.tileWInput.value) || 32);
-      this.gridTileH = Math.max(1, parseInt(this.tileHInput.value) || 32);
+      const nextW = Math.max(1, parseInt(this.tileWInput.value) || 32);
+      const nextH = Math.max(1, parseInt(this.tileHInput.value) || 32);
+      if (nextW === this.gridTileW && nextH === this.gridTileH) return;
+      this.gridTileW = nextW;
+      this.gridTileH = nextH;
       this.resliceGrid();
-    }, 200);
+    }, 400);
+  }
+
+  /** Debounced update for target output frame size controls (W/H). */
+  private scheduleTargetSizeUpdate() {
+    if (this.targetSizeTimer) clearTimeout(this.targetSizeTimer);
+    this.targetSizeTimer = window.setTimeout(() => {
+      const nextW = parseInt(this.targetWInput.value) || 0;
+      const nextH = parseInt(this.targetHInput.value) || 0;
+      if (nextW === this.targetFrameW && nextH === this.targetFrameH) return;
+      this.targetFrameW = nextW;
+      this.targetFrameH = nextH;
+      this.updateExportInfo();
+      this.renderPreview();
+      this.startPreview();
+    }, 80);
   }
 
   /** Re-slice the stored grid image with the current W/H values */
   private resliceGrid() {
     const img = this.gridImage;
     if (!img) return;
+    const tw = this.gridTileW;
+    const th = this.gridTileH;
+    if (this.lastResliceW === tw && this.lastResliceH === th) return;
+
+    const cols = Math.floor(img.width / tw);
+    const rows = Math.floor(img.height / th);
+
+    // Safety: skip slicing if it would produce an unreasonable number of tiles
+    // (e.g. user is mid-typing "32" and it fires on "3")
+    const MAX_TILES = 10000;
+    if (cols * rows > MAX_TILES) {
+      console.warn(`[SpritedTool] Skipping reslice: ${cols}×${rows} = ${cols * rows} tiles exceeds limit`);
+      return;
+    }
 
     // Remove old grid tiles from the combined list
     const gridIds = new Set(this.gridTiles.map((t) => t.id));
     this.tiles = this.tiles.filter((t) => !gridIds.has(t.id));
     this.gridTiles = [];
 
-    const tw = this.gridTileW;
-    const th = this.gridTileH;
-    const cols = Math.floor(img.width / tw);
-    const rows = Math.floor(img.height / th);
+    // Use a single offscreen canvas for blank-checking instead of one per tile
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = tw;
+    tmpCanvas.height = th;
+    const tmpCtx = tmpCanvas.getContext("2d")!;
 
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
+        // Draw into the shared tmp canvas for blank-checking
+        tmpCtx.clearRect(0, 0, tw, th);
+        tmpCtx.drawImage(img, c * tw, r * th, tw, th, 0, 0, tw, th);
+
+        // skip fully transparent tiles
+        if (this.isTileBlank(tmpCtx, tw, th)) continue;
+
+        // Only allocate a per-tile canvas for non-blank tiles
         const tc = document.createElement("canvas");
         tc.width = tw;
         tc.height = th;
         const ctx = tc.getContext("2d")!;
         ctx.drawImage(img, c * tw, r * th, tw, th, 0, 0, tw, th);
-
-        // skip fully transparent tiles
-        if (this.isTileBlank(ctx, tw, th)) continue;
 
         const tile: Tile = {
           id: `t${this.tileIdCounter++}`,
@@ -343,6 +366,8 @@ export class SpritedTool {
 
     // Rebuild combined list: grid tiles first, then individual frame tiles
     this.tiles = [...this.gridTiles, ...this.frameTiles];
+    this.lastResliceW = tw;
+    this.lastResliceH = th;
     this.renderTileGrid();
     this.updateExportInfo();
   }

@@ -65,6 +65,7 @@ export const listSummaries = query({
       status: (m as any).status ?? "published",
       mapType: (m as any).mapType ?? "private",
       combatEnabled: (m as any).combatEnabled ?? false,
+      combatSettings: (m as any).combatSettings,
       musicUrl: (m as any).musicUrl,
       creatorProfileId: (m as any).creatorProfileId,
       createdBy: (m as any).createdBy,
@@ -152,6 +153,7 @@ const layerValidator = v.object({
   type: v.union(v.literal("bg"), v.literal("obj"), v.literal("overlay")),
   tiles: v.string(),
   visible: v.boolean(),
+  tilesetUrl: v.optional(v.string()),
 });
 
 const mapTypeValidator = v.union(
@@ -159,6 +161,13 @@ const mapTypeValidator = v.union(
   v.literal("private"),
   v.literal("system"),
 );
+
+const combatSettingsValidator = v.object({
+  attackRangePx: v.optional(v.number()),
+  playerAttackCooldownMs: v.optional(v.number()),
+  npcHitCooldownMs: v.optional(v.number()),
+  damageVariancePct: v.optional(v.number()),
+});
 
 /**
  * Validate portal permissions.
@@ -220,6 +229,7 @@ export const create = mutation({
     musicUrl: v.optional(v.string()),
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
+    combatSettings: v.optional(combatSettingsValidator),
     mapType: v.optional(mapTypeValidator),
   },
   handler: async (ctx, args) => {
@@ -273,6 +283,7 @@ export const create = mutation({
       musicUrl: args.musicUrl,
       ambientSoundUrl: args.ambientSoundUrl,
       combatEnabled: args.combatEnabled ?? false,
+      combatSettings: args.combatSettings,
       status: "draft",
       mapType,
       editors: [args.profileId],
@@ -303,6 +314,7 @@ export const saveFullMap = mutation({
     musicUrl: v.optional(v.string()),
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
+    combatSettings: v.optional(combatSettingsValidator),
     status: v.optional(v.string()),
     mapType: v.optional(mapTypeValidator),
   },
@@ -349,6 +361,7 @@ export const saveFullMap = mutation({
       musicUrl: args.musicUrl,
       ambientSoundUrl: args.ambientSoundUrl,
       combatEnabled: args.combatEnabled,
+      combatSettings: args.combatSettings,
       status: args.status,
       mapType,
       updatedAt: Date.now(),
@@ -376,6 +389,7 @@ export const updateMetadata = mutation({
     musicUrl: v.optional(v.string()),
     ambientSoundUrl: v.optional(v.string()),
     combatEnabled: v.optional(v.boolean()),
+    combatSettings: v.optional(combatSettingsValidator),
     status: v.optional(v.string()),
     mapType: v.optional(mapTypeValidator),
   },
@@ -410,6 +424,7 @@ export const updateMetadata = mutation({
     if (updates.musicUrl !== undefined) patch.musicUrl = updates.musicUrl;
     if (updates.ambientSoundUrl !== undefined) patch.ambientSoundUrl = updates.ambientSoundUrl;
     if (updates.combatEnabled !== undefined) patch.combatEnabled = updates.combatEnabled;
+    if (updates.combatSettings !== undefined) patch.combatSettings = updates.combatSettings;
     if (updates.status !== undefined) patch.status = updates.status;
     if (updates.mapType !== undefined) patch.mapType = updates.mapType;
 

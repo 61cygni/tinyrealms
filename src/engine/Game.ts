@@ -6,15 +6,26 @@ import { ObjectLayer } from "./ObjectLayer.ts";
 import { WorldItemLayer } from "./WorldItemLayer.ts";
 import { InputManager } from "./InputManager.ts";
 import { AudioManager } from "./AudioManager.ts";
+import { PresenceManager } from "./PresenceManager.ts";
+import { DEFAULT_ITEM_PICKUP_SFX } from "../config/audio-config.ts";
+import {
+  COMBAT_ATTACK_KEY,
+  COMBAT_ATTACK_KEY_ALT,
+  COMBAT_AGGRO_TICK_INTERVAL_MS,
+  COMBAT_ATTACK_RANGE_PX,
+  COMBAT_CLIENT_MIN_INPUT_COOLDOWN_MS,
+  COMBAT_NOTIFICATION_ANIMATION_SECONDS,
+  COMBAT_NOTIFICATION_DURATION_MS,
+  COMBAT_NOTIFICATION_STACK_SPACING_PX,
+  COMBAT_NOTIFICATION_TOP_PX,
+  COMBAT_NPC_HIT_COOLDOWN_MS,
+  COMBAT_PLAYER_ATTACK_COOLDOWN_MS,
+  COMBAT_DEBUG,
+} from "../config/combat-config.ts";
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
-import type { AppMode, MapData, Portal, ProfileData, PresenceData } from "./types.ts";
+import type { AppMode, MapData, Portal, ProfileData } from "./types.ts";
 import type { Id } from "../../convex/_generated/dataModel";
-
-const PRESENCE_INTERVAL_MS = 250;   // how often to push position to Convex
-const SAVE_INTERVAL_MS = 30_000;   // how often to persist position to profile (was 10s)
-const PRESENCE_MOVE_THRESHOLD = 2; // px — skip presence update if player hasn't moved
-const DEFAULT_ITEM_PICKUP_SFX = "/assets/audio/take-item.mp3";
 
 /**
  * Main game class. Manages the PixiJS application, camera, map rendering,
@@ -44,11 +55,7 @@ export class Game {
   private unlockHandler: (() => void) | null = null;
 
   // Multiplayer
-  private presenceTimer: ReturnType<typeof setInterval> | null = null;
-  private saveTimer: ReturnType<typeof setInterval> | null = null;
-  private presenceUnsub: (() => void) | null = null;
-  private lastPresenceX = 0;
-  private lastPresenceY = 0;
+  private presenceManager: PresenceManager;
 
   // Live map-object subscription (static objects)
   private mapObjectsUnsub: (() => void) | null = null;
@@ -63,6 +70,8 @@ export class Game {
   private npcStateUnsub: (() => void) | null = null;
   /** Cached sprite definitions for NPC rendering */
   private spriteDefCache: Map<string, any> = new Map();
+  /** mapObjectId -> instanceName cache (used to heal stale npcState rows) */
+  private mapObjectInstanceNameById: Map<string, string> = new Map();
 
   constructor(canvas: HTMLCanvasElement, profile: ProfileData) {
     this.canvas = canvas;
@@ -71,6 +80,12 @@ export class Game {
     this.camera = new Camera();
     this.input = new InputManager(canvas);
     this.audio = new AudioManager();
+    this.presenceManager = new PresenceManager(profile, () => this.isGuest, {
+      getCurrentMapName: () => this.currentMapName,
+      getPlayerPosition: () => this.entityLayer.getPlayerPosition(),
+      isPlayerMoving: () => this.entityLayer.isPlayerMoving(),
+      onPresenceList: (presence, localProfileId) => this.entityLayer.updatePresence(presence, localProfileId),
+    });
   }
 
   async init() {
@@ -93,12 +108,14 @@ export class Game {
     this.entityLayer = new EntityLayer(this);
 
     // Add layers to stage
-    // Order: map base -> worldItems -> objects -> entities -> map overlays (above entities)
-    this.app.stage.addChild(this.mapRenderer.container);        // base map tiles
-    this.app.stage.addChild(this.worldItemLayer.container);      // pickups
-    this.app.stage.addChild(this.objectLayer.container);         // placed objects
-    this.app.stage.addChild(this.entityLayer.container);         // player + NPCs
-    this.app.stage.addChild(this.mapRenderer.overlayLayerContainer); // overlay tiles (above entities)
+    // Order: map base -> bg objects -> worldItems -> objects + entities -> obj overlays -> map overlays
+    this.app.stage.addChild(this.mapRenderer.container);              // base map tiles
+    this.app.stage.addChild(this.objectLayer.bgContainer);            // bg-layer objects (behind entities)
+    this.app.stage.addChild(this.worldItemLayer.container);           // pickups
+    this.app.stage.addChild(this.objectLayer.container);              // obj-layer objects (y-sorted with entities)
+    this.app.stage.addChild(this.entityLayer.container);              // player + NPCs
+    this.app.stage.addChild(this.objectLayer.overlayContainer);       // overlay-layer objects (above entities)
+    this.app.stage.addChild(this.mapRenderer.overlayLayerContainer);  // overlay tiles (above everything)
     this.app.stage.sortableChildren = true;
 
     // Resize handling
@@ -359,6 +376,7 @@ export class Game {
         type: l.type,
         tiles: JSON.parse(l.tiles),
         visible: l.visible,
+        tilesetUrl: l.tilesetUrl,
       })),
       collisionMask: JSON.parse(saved.collisionMask),
       labels: saved.labels,
@@ -368,6 +386,7 @@ export class Game {
       musicUrl: saved.musicUrl,
       ambientSoundUrl: saved.ambientSoundUrl,
       combatEnabled: saved.combatEnabled,
+      combatSettings: (saved as any).combatSettings,
       status: saved.status,
       editors: saved.editors?.map((e: any) => String(e)) ?? [],
       creatorProfileId: saved.creatorProfileId ? String(saved.creatorProfileId) : undefined,
@@ -573,6 +592,7 @@ export class Game {
         type: l.type as "bg" | "obj" | "overlay",
         tiles: JSON.stringify(l.tiles),
         visible: l.visible,
+        tilesetUrl: l.tilesetUrl,
       })),
       collisionMask: JSON.stringify(mapData.collisionMask),
       labels: mapData.labels.map((l) => ({
@@ -596,6 +616,7 @@ export class Game {
       ...(mapData.animationUrl ? { animationUrl: mapData.animationUrl } : {}),
       musicUrl: mapData.musicUrl,
       combatEnabled: mapData.combatEnabled,
+      combatSettings: mapData.combatSettings,
       status: mapData.status ?? "published",
       // Static maps are seeded as "system" maps
       mapType: "system",
@@ -659,6 +680,8 @@ export class Game {
       // Handle item pickup with E key (only if no toggleable object is near)
       // Guests can't interact — skip all mutations
       if (!this.isGuest) {
+        this.handleCombatInput();
+        this.handleHostileAggroTick();
         if (!this.objectLayer.getNearestToggleableId()) {
           this.handleItemPickup();
         } else {
@@ -783,113 +806,11 @@ export class Game {
   // ===========================================================================
 
   private startPresence() {
-    const convex = getConvexClient();
-    const profileId = this.profile._id as Id<"profiles">;
-    console.log(`[Presence] Starting for profile "${this.profile.name}" (${profileId}) on map "${this.currentMapName}"${this.isGuest ? " [GUEST — read-only]" : ""}`);
-
-    // Guests don't broadcast their position or save it, but still see others
-    if (!this.isGuest) {
-      // 1) Push local position + velocity periodically (delta-only to reduce DB writes)
-      this.presenceTimer = setInterval(() => {
-        const pos = this.entityLayer.getPlayerPosition();
-        const dx = pos.x - this.lastPresenceX;
-        const dy = pos.y - this.lastPresenceY;
-        // Skip update if player hasn't moved beyond threshold (reduces mutations ~50-90%)
-        if (dx * dx + dy * dy < PRESENCE_MOVE_THRESHOLD * PRESENCE_MOVE_THRESHOLD) return;
-        this.lastPresenceX = pos.x;
-        this.lastPresenceY = pos.y;
-        convex
-          .mutation(api.presence.update, {
-            profileId,
-            mapName: this.currentMapName,
-            x: pos.x,
-            y: pos.y,
-            vx: pos.vx,
-            vy: pos.vy,
-            direction: pos.direction,
-            animation: this.entityLayer.isPlayerMoving() ? "walk" : "idle",
-            spriteUrl: this.profile.spriteUrl,
-            name: this.profile.name,
-          })
-          .catch((err) => console.warn("Presence update failed:", err));
-      }, PRESENCE_INTERVAL_MS);
-    }
-
-    // 2) Subscribe to presence of others on this map (guests included — read-only)
-    this.presenceUnsub = convex.onUpdate(
-      api.presence.listByMap,
-      { mapName: this.currentMapName },
-      (presenceList) => {
-        const mapped: PresenceData[] = presenceList.map((p) => ({
-          profileId: p.profileId,
-          name: p.name,
-          spriteUrl: p.spriteUrl,
-          x: p.x,
-          y: p.y,
-          vx: p.vx ?? 0,
-          vy: p.vy ?? 0,
-          direction: p.direction,
-          animation: p.animation,
-          lastSeen: p.lastSeen,
-        }));
-        this.entityLayer.updatePresence(mapped, profileId);
-      },
-      (err) => {
-        console.warn("Presence subscription error:", err);
-      },
-    );
-
-    if (!this.isGuest) {
-      // 3) Save position to profile periodically (for resume on reload)
-      this.saveTimer = setInterval(() => {
-        const pos = this.entityLayer.getPlayerPosition();
-        convex
-          .mutation(api.profiles.savePosition, {
-            id: profileId,
-            mapName: this.currentMapName,
-            x: pos.x,
-            y: pos.y,
-            direction: pos.direction,
-          })
-          .catch((err) => console.warn("Position save failed:", err));
-      }, SAVE_INTERVAL_MS);
-
-      // 4) Clean up presence on tab close
-      window.addEventListener("beforeunload", this.handleUnload);
-      window.addEventListener("pagehide", this.handleUnload);
-    }
+    this.presenceManager.start();
   }
 
-  private handleUnload = () => {
-    if (this.isGuest) return;
-    const convex = getConvexClient();
-    const profileId = this.profile._id as Id<"profiles">;
-    // Best-effort: fire-and-forget cleanup
-    convex.mutation(api.presence.remove, { profileId }).catch(() => {});
-  };
-
   private stopPresence() {
-    if (this.presenceTimer) {
-      clearInterval(this.presenceTimer);
-      this.presenceTimer = null;
-    }
-    if (this.saveTimer) {
-      clearInterval(this.saveTimer);
-      this.saveTimer = null;
-    }
-    if (this.presenceUnsub) {
-      this.presenceUnsub();
-      this.presenceUnsub = null;
-    }
-    window.removeEventListener("beforeunload", this.handleUnload);
-    window.removeEventListener("pagehide", this.handleUnload);
-
-    // Remove presence row and release profile (not for guests)
-    if (!this.isGuest) {
-      const convex = getConvexClient();
-      const profileId = this.profile._id as Id<"profiles">;
-      convex.mutation(api.presence.remove, { profileId }).catch(() => {});
-    }
+    this.presenceManager.stop();
   }
 
   // ===========================================================================
@@ -913,6 +834,7 @@ export class Game {
 
       const defs = await convex.query(api.spriteDefinitions.list, {});
       const objs = await convex.query(api.mapObjects.listByMap, { mapName });
+      this.refreshMapObjectInstanceCache(objs as any[]);
 
       if (objs.length === 0 || defs.length === 0) return;
 
@@ -954,6 +876,7 @@ export class Game {
             name: def.name,
             spriteSheetUrl: def.spriteSheetUrl,
             defaultAnimation: def.defaultAnimation,
+            animationSpeed: def.animationSpeed,
             scale: def.scale,
             frameWidth: def.frameWidth,
             frameHeight: def.frameHeight,
@@ -1000,6 +923,7 @@ export class Game {
       api.mapObjects.listByMap,
       { mapName },
       (objs) => {
+        this.refreshMapObjectInstanceCache(objs as any[]);
         // Skip the initial callback when we already loaded objects above
         if (this.mapObjectsFirstCallback) {
           this.mapObjectsFirstCallback = false;
@@ -1028,11 +952,12 @@ export class Game {
    */
   private async reloadPlacedObjects(
     mapName: string,
-    objs: { _id: string; spriteDefName: string; x: number; y: number; layer?: number; isOn?: boolean }[],
+    objs: { _id: string; spriteDefName: string; x: number; y: number; layer?: number; isOn?: boolean; instanceName?: string }[],
   ) {
     this.mapObjectsLoading = true;
     try {
       const convex = getConvexClient();
+      this.refreshMapObjectInstanceCache(objs as any[]);
 
       // Fetch latest sprite definitions (may have changed too)
       const defs = await convex.query(api.spriteDefinitions.list, {});
@@ -1065,6 +990,7 @@ export class Game {
             name: def.name,
             spriteSheetUrl: def.spriteSheetUrl,
             defaultAnimation: def.defaultAnimation,
+            animationSpeed: def.animationSpeed,
             scale: def.scale,
             frameWidth: def.frameWidth,
             frameHeight: def.frameHeight,
@@ -1222,6 +1148,155 @@ export class Game {
     this.pickingUp = false;
   }
 
+  private attacking = false;
+  private lastAttackAt = 0;
+  private aggroResolving = false;
+  private lastAggroTickAt = 0;
+  private activeCombatNotifications: HTMLDivElement[] = [];
+  private async handleCombatInput() {
+    if (this.attacking) return;
+    if (!this.currentMapData?.combatEnabled) return;
+    if (this.entityLayer.inDialogue) return;
+
+    const attackPressed =
+      this.input.wasJustPressed(COMBAT_ATTACK_KEY) ||
+      this.input.wasJustPressed(COMBAT_ATTACK_KEY_ALT);
+    if (!attackPressed) return;
+    if (COMBAT_DEBUG) console.log("[CombatDebug:client] F pressed", {
+      mapName: this.currentMapName,
+      combatEnabled: !!this.currentMapData?.combatEnabled,
+      playerX: Math.round(this.entityLayer.playerX),
+      playerY: Math.round(this.entityLayer.playerY),
+      inDialogue: this.entityLayer.inDialogue,
+      isGuest: this.isGuest,
+      settings: this.currentMapData?.combatSettings ?? null,
+    });
+    const now = Date.now();
+    const playerCooldownMs =
+      this.currentMapData?.combatSettings?.playerAttackCooldownMs ??
+      COMBAT_PLAYER_ATTACK_COOLDOWN_MS;
+    const npcHitCooldownMs =
+      this.currentMapData?.combatSettings?.npcHitCooldownMs ??
+      COMBAT_NPC_HIT_COOLDOWN_MS;
+    const effectiveCooldownMs = Math.max(
+      COMBAT_CLIENT_MIN_INPUT_COOLDOWN_MS,
+      Math.round(playerCooldownMs),
+      Math.round(npcHitCooldownMs),
+    );
+    if (now - this.lastAttackAt < effectiveCooldownMs) {
+      if (COMBAT_DEBUG) console.log("[CombatDebug:client] blocked by local cooldown", {
+        elapsedMs: now - this.lastAttackAt,
+        cooldownMs: effectiveCooldownMs,
+      });
+      return;
+    }
+    this.lastAttackAt = now;
+
+    this.attacking = true;
+    try {
+      const convex = getConvexClient();
+      const result = await convex.mutation((api as any).mechanics.combat.attackNearestHostile, {
+        profileId: this.profile._id as any,
+        mapName: this.currentMapName,
+        x: this.entityLayer.playerX,
+        y: this.entityLayer.playerY,
+      });
+
+      if (!result?.success) {
+        if (COMBAT_DEBUG) console.log("[CombatDebug:client] attack rejected", result);
+        this.showCombatNotification(result?.reason ?? "No target in range.", "#ffcc66");
+        return;
+      }
+      if (COMBAT_DEBUG) console.log("[CombatDebug:client] attack accepted", result);
+
+      const dealt = Number(result.dealt ?? 0);
+      const took = Number(result.took ?? 0);
+      const targetName = String(result.targetName ?? "Enemy");
+      this.showCombatNotification(`You hit ${targetName} for ${dealt}`, "#ff6666");
+
+      // Flash the hostile NPC that was hit and play hit sound
+      if (result.targetInstanceName) {
+        const hitNpc = this.entityLayer.getNpcByInstanceName(String(result.targetInstanceName));
+        hitNpc?.playHitEffect();
+        this.audio.playOneShot("/assets/audio/hit.mp3", 0.7);
+      }
+
+      if (took > 0) {
+        this.showCombatNotification(`${targetName} hits you for ${took}`, "#ff9b66");
+        this.entityLayer.playPlayerHitEffect();
+      }
+      if (result.defeated) {
+        const xp = Number(result.xpGained ?? 0);
+        this.showCombatNotification(`${targetName} defeated! +${xp} XP`, "#66ff99");
+      } else {
+        const hp = Number(result.targetHp ?? 0);
+        const max = Number(result.targetMaxHp ?? 0);
+        this.showCombatNotification(`${targetName} HP ${hp}/${max}`, "#ffb3b3");
+      }
+      if (Array.isArray(result.droppedLoot) && result.droppedLoot.length > 0) {
+        const first = result.droppedLoot[0];
+        this.showCombatNotification(`Loot dropped: ${first.itemDefName}`, "#99e6ff");
+      }
+      // Keep local profile HUD in sync with server patches from combat exchange.
+      if (typeof took === "number" && took >= 0) {
+        this.profile.stats.hp = Math.max(0, this.profile.stats.hp - took);
+      }
+      if (result.defeated && typeof result.xpGained === "number") {
+        this.profile.stats.xp += result.xpGained;
+      }
+    } catch (err) {
+      console.warn("Combat attack failed:", err);
+      if (COMBAT_DEBUG) console.log("[CombatDebug:client] attack exception", {
+        message: (err as any)?.message ?? String(err),
+      });
+      const range = this.currentMapData?.combatSettings?.attackRangePx ?? COMBAT_ATTACK_RANGE_PX;
+      this.showCombatNotification(
+        `Attack failed (range ${range}px)`,
+        "#ffcc66",
+      );
+    } finally {
+      this.attacking = false;
+    }
+  }
+
+  private async handleHostileAggroTick() {
+    if (this.aggroResolving) return;
+    if (!this.currentMapData?.combatEnabled) return;
+    if (this.entityLayer.inDialogue) return;
+
+    const now = Date.now();
+    if (now - this.lastAggroTickAt < COMBAT_AGGRO_TICK_INTERVAL_MS) return;
+    this.lastAggroTickAt = now;
+
+    this.aggroResolving = true;
+    try {
+      const convex = getConvexClient();
+      const result = await convex.mutation(
+        (api as any).mechanics.combat.resolveAggroAttack,
+        {
+          profileId: this.profile._id as any,
+          mapName: this.currentMapName,
+          x: this.entityLayer.playerX,
+          y: this.entityLayer.playerY,
+        },
+      );
+      if (!result?.success) return;
+      const attacker = String(result.attackerName ?? "Hostile");
+      const took = Number(result.took ?? 0);
+      if (took > 0) {
+        this.showCombatNotification(`${attacker} attacks you for ${took}`, "#ff9966");
+        this.entityLayer.playPlayerHitEffect();
+      }
+      if (typeof result.playerHp === "number") {
+        this.profile.stats.hp = Math.max(0, Number(result.playerHp));
+      }
+    } catch (err) {
+      console.warn("Aggro combat tick failed:", err);
+    } finally {
+      this.aggroResolving = false;
+    }
+  }
+
   /** Show a brief floating text notification for item pickup */
   private showPickupNotification(text: string) {
     const div = document.createElement("div");
@@ -1246,9 +1321,57 @@ export class Game {
     setTimeout(() => div.remove(), 1600);
   }
 
+  /** Show a brief floating text notification for combat events */
+  private showCombatNotification(text: string, color = "#ff6666") {
+    const div = document.createElement("div");
+    div.textContent = text;
+    this.activeCombatNotifications.push(div);
+    const idx = this.activeCombatNotifications.length - 1;
+    const topPx =
+      COMBAT_NOTIFICATION_TOP_PX +
+      idx * COMBAT_NOTIFICATION_STACK_SPACING_PX;
+    div.style.cssText = `
+      position: fixed;
+      top: ${topPx}px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.82);
+      color: ${color};
+      padding: 8px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: Inter, sans-serif;
+      font-weight: 600;
+      z-index: 9999;
+      pointer-events: none;
+      animation: pickupFadeUp ${COMBAT_NOTIFICATION_ANIMATION_SECONDS}s ease-out forwards;
+    `;
+    document.body.appendChild(div);
+    setTimeout(() => {
+      const i = this.activeCombatNotifications.indexOf(div);
+      if (i >= 0) this.activeCombatNotifications.splice(i, 1);
+      div.remove();
+      // Re-pack remaining notifications to avoid overlap gaps.
+      this.activeCombatNotifications.forEach((el, n) => {
+        el.style.top = `${COMBAT_NOTIFICATION_TOP_PX + n * COMBAT_NOTIFICATION_STACK_SPACING_PX}px`;
+      });
+    }, COMBAT_NOTIFICATION_DURATION_MS);
+  }
+
   // ===========================================================================
   // Server-authoritative NPC state subscription
   // ===========================================================================
+
+  private refreshMapObjectInstanceCache(
+    objs: Array<{ _id: string; instanceName?: string | null }>,
+  ) {
+    this.mapObjectInstanceNameById.clear();
+    for (const o of objs) {
+      if (typeof o.instanceName === "string" && o.instanceName.length > 0) {
+        this.mapObjectInstanceNameById.set(String(o._id), o.instanceName);
+      }
+    }
+  }
 
   private subscribeToNpcState(mapName: string) {
     this.npcStateUnsub?.();
@@ -1265,7 +1388,12 @@ export class Game {
             _id: s._id,
             mapObjectId: s.mapObjectId as string,
             spriteDefName: s.spriteDefName,
-            instanceName: s.instanceName ?? undefined,
+            instanceName:
+              s.instanceName ??
+              this.mapObjectInstanceNameById.get(String(s.mapObjectId)) ??
+              undefined,
+            currentHp: (s as any).currentHp,
+            maxHp: (s as any).maxHp,
             x: s.x,
             y: s.y,
             vx: s.vx,

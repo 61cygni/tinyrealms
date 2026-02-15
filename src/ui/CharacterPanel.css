@@ -269,6 +269,21 @@
   gap: 6px;
 }
 
+.char-item-use-status {
+  min-height: 16px;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.char-item-use-status.good {
+  color: var(--success);
+}
+
+.char-item-use-status.bad {
+  color: var(--danger);
+}
+
 .char-item {
   display: flex;
   align-items: center;
@@ -282,6 +297,15 @@
   position: relative;
 }
 
+.char-item--consumable {
+  cursor: pointer;
+  border-color: rgba(46, 204, 113, 0.45);
+}
+
+.char-item--consumable:hover {
+  background: rgba(46, 204, 113, 0.12);
+}
+
 .char-item-name {
   white-space: nowrap;
 }
@@ -290,6 +314,12 @@
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--text-muted);
+}
+
+.char-item-effect {
+  font-size: 10px;
+  color: var(--warning);
+  font-family: var(--font-mono);
 }
 
 .char-item-remove {

@@ -1,5 +1,5 @@
 .layer-panel {
-  width: 120px;
+  width: 180px;
   padding: 8px;
   border-right: 1px solid var(--border);
   display: flex;
@@ -15,14 +15,23 @@
   margin-bottom: 4px;
 }
 
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .layer-btn {
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: 11px;
   background: var(--bg-hover);
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .layer-btn:hover {
@@ -32,4 +41,24 @@
 .layer-btn.active {
   background: var(--accent);
   color: white;
+}
+
+.layer-controls {
+  margin-top: 4px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.layer-ctrl-btn {
+  padding: 4px 6px;
+  font-size: 10px;
+  background: var(--bg-hover);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+}
+
+.layer-ctrl-btn:hover {
+  border-color: var(--border);
 }

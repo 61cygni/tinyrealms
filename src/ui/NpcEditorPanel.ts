@@ -12,7 +12,8 @@ import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { Game } from "../engine/Game.ts";
 import type { Id } from "../../convex/_generated/dataModel";
-import { NPC_SPRITE_SHEETS, SOUND_FILES } from "../sprited/SpriteEditorPanel.ts";
+import { NPC_SPRITE_SHEETS } from "../config/spritesheet-config.ts";
+import { SOUND_FILES } from "../config/audio-config.ts";
 import "./NpcEditor.css";
 
 // ---------------------------------------------------------------------------
@@ -69,6 +70,21 @@ interface NpcProfileData {
   stats?: NpcStats;
   items?: { name: string; quantity: number }[];
   tags?: string[];
+  aggression?: "low" | "medium" | "high";
+  npcType?: "procedural" | "ai";
+  aiEnabled?: boolean;
+  braintrustSlug?: string;
+  aiPolicy?: {
+    capabilities?: {
+      canChat?: boolean;
+      canNavigate?: boolean;
+      canPickupItems?: boolean;
+      canUseShops?: boolean;
+      canCombat?: boolean;
+      canAffectQuests?: boolean;
+      canUsePortals?: boolean;
+    };
+  };
   visibilityType?: "public" | "private" | "system";
 }
 
@@ -172,6 +188,15 @@ export class NpcEditorPanel {
   private dialogueStyleInput!: HTMLInputElement;
   private factionInput!: HTMLInputElement;
   private visibilitySelect!: HTMLSelectElement;
+  private npcTypeSelect!: HTMLSelectElement;
+  private aiEnabledCheck!: HTMLInputElement;
+  private aiCanChatCheck!: HTMLInputElement;
+  private hostileTagCheck!: HTMLInputElement;
+  private aggressionSelect!: HTMLSelectElement;
+  private braintrustSlugInput!: HTMLInputElement;
+  private aiTestMessageInput!: HTMLInputElement;
+  private aiTestResultArea!: HTMLTextAreaElement;
+  private aiHistoryPane!: HTMLDivElement;
   private knowledgeArea!: HTMLTextAreaElement;
   private secretsArea!: HTMLTextAreaElement;
   private systemPromptArea!: HTMLTextAreaElement;
@@ -975,6 +1000,16 @@ export class NpcEditorPanel {
     saveBtn.textContent = "Save";
     saveBtn.addEventListener("click", () => this.save());
 
+    const testAiBtn = document.createElement("button");
+    testAiBtn.className = "npc-editor-btn";
+    testAiBtn.textContent = "Test AI";
+    testAiBtn.addEventListener("click", () => this.testAI());
+
+    const clearAiBtn = document.createElement("button");
+    clearAiBtn.className = "npc-editor-btn";
+    clearAiBtn.textContent = "Clear AI History";
+    clearAiBtn.addEventListener("click", () => this.clearAIHistory());
+
     const deleteBtn = document.createElement("button");
     deleteBtn.className = "npc-editor-btn danger";
     deleteBtn.textContent = "Delete Profile";
@@ -983,7 +1018,7 @@ export class NpcEditorPanel {
     this.statusEl = document.createElement("span");
     this.statusEl.className = "npc-editor-status";
 
-    actions.append(this.statusEl, saveBtn, deleteBtn);
+    actions.append(this.statusEl, saveBtn, testAiBtn, clearAiBtn, deleteBtn);
     this.headerEl.append(this.headerSprite, headerInfo, actions);
     this.mainEl.appendChild(this.headerEl);
 
@@ -1019,11 +1054,101 @@ export class NpcEditorPanel {
     rightCol.className = "npc-editor-col";
 
     const identitySec = this.makeSection("Identity");
-    this.instanceNameInput = this.addTextField(identitySec, "Instance Name (unique ID)", "e.g. elara-herbalist");
+    this.instanceNameInput = this.addTextField(identitySec, "Instance Name (auto if blank)", "e.g. elara-herbalist");
     this.displayNameInput = this.addTextField(identitySec, "Display Name", "e.g. Elara the Herbalist");
     this.titleInput = this.addTextField(identitySec, "Title / Role", "e.g. Village Herbalist");
     this.factionInput = this.addTextField(identitySec, "Faction / Affiliation", "e.g. Forest Druids");
     this.visibilitySelect = this.addSelect(identitySec, "Visibility", this.getVisibilityOptions());
+
+    const aiSec = this.makeSection("AI");
+    this.npcTypeSelect = this.addSelect(aiSec, "NPC Type", [
+      { value: "procedural", label: "Procedural" },
+      { value: "ai", label: "AI" },
+    ]);
+
+    const aiEnabledRow = document.createElement("div");
+    aiEnabledRow.className = "npc-editor-field npc-editor-field-row";
+    this.aiEnabledCheck = document.createElement("input");
+    this.aiEnabledCheck.type = "checkbox";
+    this.aiEnabledCheck.id = "npc-ai-enabled-check";
+    this.aiEnabledCheck.addEventListener("change", () => {
+      if (this.aiEnabledCheck.checked) this.npcTypeSelect.value = "ai";
+    });
+    const aiEnabledLabel = document.createElement("label");
+    aiEnabledLabel.htmlFor = "npc-ai-enabled-check";
+    aiEnabledLabel.textContent = "Enable AI chat";
+    aiEnabledRow.append(this.aiEnabledCheck, aiEnabledLabel);
+    aiSec.appendChild(aiEnabledRow);
+
+    const aiCanChatRow = document.createElement("div");
+    aiCanChatRow.className = "npc-editor-field npc-editor-field-row";
+    this.aiCanChatCheck = document.createElement("input");
+    this.aiCanChatCheck.type = "checkbox";
+    this.aiCanChatCheck.id = "npc-ai-can-chat-check";
+    const aiCanChatLabel = document.createElement("label");
+    aiCanChatLabel.htmlFor = "npc-ai-can-chat-check";
+    aiCanChatLabel.textContent = "Allow chat capability";
+    aiCanChatRow.append(this.aiCanChatCheck, aiCanChatLabel);
+    aiSec.appendChild(aiCanChatRow);
+
+    const hostileTagRow = document.createElement("div");
+    hostileTagRow.className = "npc-editor-field npc-editor-field-row";
+    this.hostileTagCheck = document.createElement("input");
+    this.hostileTagCheck.type = "checkbox";
+    this.hostileTagCheck.id = "npc-hostile-tag-check";
+    this.hostileTagCheck.addEventListener("change", () => {
+      if (!this.currentProfile) return;
+      if (!this.currentProfile.tags) this.currentProfile.tags = [];
+      if (this.hostileTagCheck.checked) {
+        if (!this.currentProfile.tags.includes("hostile")) {
+          this.currentProfile.tags.push("hostile");
+        }
+      } else {
+        this.currentProfile.tags = this.currentProfile.tags.filter((t) => t !== "hostile");
+      }
+      this.renderTags();
+    });
+    const hostileTagLabel = document.createElement("label");
+    hostileTagLabel.htmlFor = "npc-hostile-tag-check";
+    hostileTagLabel.textContent = "Hostile (combat target)";
+    hostileTagRow.append(this.hostileTagCheck, hostileTagLabel);
+    aiSec.appendChild(hostileTagRow);
+
+    this.aggressionSelect = this.addSelect(aiSec, "Aggression", [
+      { value: "low", label: "Low (flee + counter only)" },
+      { value: "medium", label: "Medium (retaliates once engaged)" },
+      { value: "high", label: "High (attacks on proximity)" },
+    ]);
+
+    this.braintrustSlugInput = this.addTextField(
+      aiSec,
+      "Braintrust Slug",
+      "e.g. npc-merchant-v1",
+    );
+
+    this.aiTestMessageInput = this.addTextField(
+      aiSec,
+      "Test Message",
+      "Hello there",
+    );
+
+    const testOutLabel = document.createElement("label");
+    testOutLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
+    testOutLabel.textContent = "Test AI Output";
+    this.aiTestResultArea = document.createElement("textarea");
+    this.aiTestResultArea.rows = 4;
+    this.aiTestResultArea.readOnly = true;
+    this.aiTestResultArea.placeholder = "Test output appears here.";
+    this.aiTestResultArea.style.cssText =
+      "width:100%;resize:vertical;min-height:84px;background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;padding:8px;font:inherit;";
+    aiSec.append(testOutLabel, this.aiTestResultArea);
+
+    const aiHint = document.createElement("div");
+    aiHint.style.cssText = "font-size:11px;color:var(--text-muted);line-height:1.35;";
+    aiHint.textContent =
+      "Use System Prompt with Braintrust moustache templates in your slug config.";
+    aiSec.appendChild(aiHint);
+    leftCol.appendChild(aiSec);
 
     const tagsLabel = document.createElement("label");
     tagsLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
@@ -1074,6 +1199,14 @@ export class NpcEditorPanel {
 
     const promptSec = this.makeSection("LLM System Prompt");
     this.systemPromptArea = this.addTextArea(promptSec, "System Prompt", "Full system prompt for LLM conversations. Leave empty to auto-generate from other fields.", 6);
+    const historyLabel = document.createElement("label");
+    historyLabel.textContent = "Message History (latest 20)";
+    historyLabel.style.cssText = "font-size:11px;color:var(--text-muted);";
+    this.aiHistoryPane = document.createElement("div");
+    this.aiHistoryPane.style.cssText =
+      "max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--surface-2);font-size:12px;line-height:1.35;white-space:pre-wrap;";
+    this.aiHistoryPane.textContent = "No message history yet.";
+    promptSec.append(historyLabel, this.aiHistoryPane);
     rightCol.appendChild(promptSec);
 
     this.bodyEl.append(leftCol, rightCol);
@@ -1271,6 +1404,9 @@ export class NpcEditorPanel {
 
   private renderTags() {
     this.tagsList.innerHTML = "";
+    if (this.hostileTagCheck) {
+      this.hostileTagCheck.checked = (this.currentProfile?.tags ?? []).includes("hostile");
+    }
     for (const t of this.currentProfile?.tags ?? []) {
       const el = document.createElement("span");
       el.className = "npc-editor-tag";
@@ -1452,6 +1588,10 @@ export class NpcEditorPanel {
         spriteDefName: inst.spriteDefName,
         mapName: inst.mapName,
         displayName: inst.spriteDef?.name || inst.spriteDefName,
+        npcType: "procedural",
+        aiEnabled: false,
+        aggression: "medium",
+        aiPolicy: { capabilities: { canChat: true } },
         stats: { ...DEFAULT_STATS },
         items: [],
         tags: [],
@@ -1484,6 +1624,14 @@ export class NpcEditorPanel {
     this.titleInput.value = p.title ?? "";
     this.factionInput.value = p.faction ?? "";
     this.rebuildVisibilitySelect(p.visibilityType ?? (p._id ? "system" : "private"));
+    this.npcTypeSelect.value = p.npcType ?? "procedural";
+    this.aiEnabledCheck.checked = !!p.aiEnabled;
+    this.aiCanChatCheck.checked = p.aiPolicy?.capabilities?.canChat !== false;
+    this.hostileTagCheck.checked = (p.tags ?? []).includes("hostile");
+    this.aggressionSelect.value = p.aggression ?? "medium";
+    this.braintrustSlugInput.value = p.braintrustSlug ?? "";
+    this.aiTestMessageInput.value = this.aiTestMessageInput.value || "Hello there";
+    this.aiTestResultArea.value = "";
     this.backstoryArea.value = p.backstory ?? "";
     this.personalityArea.value = p.personality ?? "";
     this.dialogueStyleInput.value = p.dialogueStyle ?? "";
@@ -1499,6 +1647,35 @@ export class NpcEditorPanel {
     this.renderItems();
     this.renderTags();
     this.renderRelationships();
+    void this.loadConversationHistory();
+  }
+
+  private async loadConversationHistory() {
+    if (!this.currentProfile?.name || !this.aiHistoryPane) return;
+    this.aiHistoryPane.textContent = "Loading history…";
+    try {
+      const convex = getConvexClient();
+      const rows = await convex.query((api as any).npc.memory.listConversation, {
+        npcProfileName: this.currentProfile.name,
+        limit: 20,
+      }) as Array<{ role: string; content: string; createdAt?: number }>;
+      if (!rows || rows.length === 0) {
+        this.aiHistoryPane.textContent = "No message history yet.";
+        return;
+      }
+      this.aiHistoryPane.innerHTML = "";
+      for (const r of rows) {
+        const line = document.createElement("div");
+        line.style.cssText = "margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed var(--border);";
+        const who = String(r.role || "unknown");
+        const ts = r.createdAt ? new Date(r.createdAt).toLocaleString() : "";
+        line.textContent = `${who}${ts ? ` • ${ts}` : ""}\n${String(r.content || "")}`;
+        this.aiHistoryPane.appendChild(line);
+      }
+      this.aiHistoryPane.scrollTop = this.aiHistoryPane.scrollHeight;
+    } catch (err: any) {
+      this.aiHistoryPane.textContent = `Failed to load history: ${err?.message || "unknown error"}`;
+    }
   }
 
   private collectForm(): NpcProfileData | null {
@@ -1510,6 +1687,16 @@ export class NpcEditorPanel {
     p.title = this.titleInput.value.trim() || undefined;
     p.faction = this.factionInput.value.trim() || undefined;
     p.visibilityType = this.visibilitySelect.value as any;
+    p.aiEnabled = this.aiEnabledCheck.checked;
+    p.aggression = this.aggressionSelect.value as "low" | "medium" | "high";
+    p.npcType = p.aiEnabled || this.npcTypeSelect.value === "ai" ? "ai" : "procedural";
+    p.braintrustSlug = this.braintrustSlugInput.value.trim() || undefined;
+    p.aiPolicy = {
+      capabilities: {
+        ...(p.aiPolicy?.capabilities ?? {}),
+        canChat: this.aiCanChatCheck.checked,
+      },
+    };
     p.backstory = this.backstoryArea.value.trim() || undefined;
     p.personality = this.personalityArea.value.trim() || undefined;
     p.dialogueStyle = this.dialogueStyleInput.value.trim() || undefined;
@@ -1539,13 +1726,6 @@ export class NpcEditorPanel {
     const profile = this.collectForm();
     if (!profile || !this.game || !this.selected) return;
 
-    if (!profile.name) {
-      this.statusEl.textContent = "Instance name is required";
-      this.statusEl.style.color = "var(--danger)";
-      this.instanceNameInput.focus();
-      return;
-    }
-
     const convex = getConvexClient();
     const adminId = this.game.profile._id as Id<"profiles">;
 
@@ -1553,16 +1733,24 @@ export class NpcEditorPanel {
       this.statusEl.textContent = "Saving\u2026";
       this.statusEl.style.color = "var(--text-muted)";
 
-      if (profile.name !== this.selected.instanceName) {
-        await convex.mutation(api.npcProfiles.assignInstanceName, {
+      if (profile.name !== this.selected.instanceName || !this.selected.instanceName) {
+        const assignResult = await convex.mutation((api as any).npcProfiles.assignInstanceName, {
           profileId: adminId,
           mapObjectId: this.selected.mapObjectId as Id<"mapObjects">,
           instanceName: profile.name,
         });
-        this.selected.instanceName = profile.name;
+        const finalName =
+          String((assignResult as any)?.instanceName || "").trim() || profile.name;
+        profile.name = finalName;
+        this.selected.instanceName = finalName;
+        this.instanceNameInput.value = finalName;
       }
 
-      await convex.mutation(api.npcProfiles.save, {
+      if (!profile.name) {
+        throw new Error("Unable to assign an instance name");
+      }
+
+      await convex.mutation((api as any).npcProfiles.save, {
         profileId: adminId,
         name: profile.name,
         spriteDefName: profile.spriteDefName,
@@ -1580,6 +1768,11 @@ export class NpcEditorPanel {
         stats: profile.stats,
         items: profile.items?.length ? profile.items : undefined,
         tags: profile.tags?.length ? profile.tags : undefined,
+        aggression: profile.aggression,
+        npcType: profile.npcType,
+        aiEnabled: profile.aiEnabled,
+        braintrustSlug: profile.braintrustSlug,
+        aiPolicy: profile.aiPolicy,
         visibilityType: profile.visibilityType,
       });
 
@@ -1602,6 +1795,94 @@ export class NpcEditorPanel {
     } catch (err: any) {
       console.error("Failed to save NPC profile:", err);
       this.statusEl.textContent = err?.message || "Error saving";
+      this.statusEl.style.color = "var(--danger)";
+    }
+  }
+
+  private async testAI() {
+    const profile = this.collectForm();
+    if (!profile || !this.game || !this.selected) return;
+
+    if (!profile.name) {
+      this.statusEl.textContent = "Instance name is required before test";
+      this.statusEl.style.color = "var(--danger)";
+      this.instanceNameInput.focus();
+      return;
+    }
+    if (!profile.aiEnabled || profile.npcType !== "ai") {
+      this.statusEl.textContent = "Enable AI and set NPC Type to AI first";
+      this.statusEl.style.color = "var(--danger)";
+      return;
+    }
+
+    const message = this.aiTestMessageInput.value.trim() || "Hello there";
+    const convex = getConvexClient();
+    this.aiTestResultArea.value = "Running AI test…";
+    this.statusEl.textContent = "Testing AI…";
+    this.statusEl.style.color = "var(--text-muted)";
+
+    try {
+      // Ensure profile exists in DB. If not, ask user to save first.
+      const existing = await convex.query(api.npcProfiles.getByName, { name: profile.name });
+      if (!existing) {
+        this.aiTestResultArea.value = "Profile not found in Convex. Save this NPC profile first, then re-run Test AI.";
+        this.statusEl.textContent = "Save profile first";
+        this.statusEl.style.color = "var(--danger)";
+        return;
+      }
+
+      const result = await convex.action(api.npc.chat.chatTurn, {
+        npcProfileName: profile.name,
+        userMessage: message,
+        mapName: this.selected.mapName,
+        actorProfileId: this.game.profile._id as Id<"profiles">,
+      });
+
+      const accepted = !!(result as any)?.accepted;
+      const reply = String((result as any)?.reply ?? "").trim();
+      const reason = (result as any)?.reason ? String((result as any).reason) : "";
+      this.aiTestResultArea.value = accepted
+        ? reply || "(No reply text)"
+        : `Rejected: ${reason || "unknown"}\n${reply || ""}`.trim();
+      await this.loadConversationHistory();
+      this.statusEl.textContent = accepted ? "AI test OK" : "AI test rejected";
+      this.statusEl.style.color = accepted ? "var(--success)" : "var(--warning)";
+    } catch (err: any) {
+      const msg = err?.message || "AI test failed";
+      this.aiTestResultArea.value = msg;
+      this.statusEl.textContent = "AI test failed";
+      this.statusEl.style.color = "var(--danger)";
+    }
+  }
+
+  private async clearAIHistory() {
+    if (!this.game || !this.currentProfile?._id) {
+      this.statusEl.textContent = "Save profile first";
+      this.statusEl.style.color = "var(--danger)";
+      return;
+    }
+    const name = this.currentProfile.name || "(unnamed)";
+    const ok = confirm(
+      `Clear AI history for "${name}"?\n\nThis deletes saved conversation turns and memory summary for this NPC.`,
+    );
+    if (!ok) return;
+
+    const convex = getConvexClient();
+    this.statusEl.textContent = "Clearing AI history…";
+    this.statusEl.style.color = "var(--text-muted)";
+    try {
+      const result = await convex.mutation((api as any).npcProfiles.clearConversationHistory, {
+        profileId: this.game.profile._id as Id<"profiles">,
+        npcProfileId: this.currentProfile._id as Id<"npcProfiles">,
+      });
+      const conv = Number((result as any)?.conversationsDeleted ?? 0);
+      const mem = Number((result as any)?.memoriesDeleted ?? 0);
+      this.aiTestResultArea.value = `Cleared history for ${name}.\nConversations deleted: ${conv}\nMemory rows deleted: ${mem}`;
+      await this.loadConversationHistory();
+      this.statusEl.textContent = "AI history cleared";
+      this.statusEl.style.color = "var(--success)";
+    } catch (err: any) {
+      this.statusEl.textContent = err?.message || "Failed to clear AI history";
       this.statusEl.style.color = "var(--danger)";
     }
   }

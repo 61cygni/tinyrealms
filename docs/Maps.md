@@ -156,7 +156,7 @@ Then register the map for auto-seeding (see [Static Map Seeding](#static-map-see
 | **Paint** | Stamps the selected tile(s) onto the active layer. Multi-tile selections paint as a group. |
 | **Erase** | Sets tiles to `-1` (transparent) on the active layer. |
 | **Collision** | Toggles collision on/off per tile. Collision tiles show as semi-transparent red overlays. |
-| **Object** | Places sprite objects (NPCs, decorations) — see the [NPCs](NPCs.md) and [Characters](Characters.md) guides. |
+| **Object** | Places sprite objects (NPCs, decorations) — see the [NPCs](NPCs.md) guide. |
 | **Object Erase** | Removes placed objects. |
 | **Portal** | Creates portals to other maps — see [below](#connecting-maps-with-portals). |
 | **Label** | Creates named spawn points — see [below](#adding-labels--spawn-points). |

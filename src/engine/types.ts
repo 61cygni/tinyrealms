@@ -17,6 +17,8 @@ export interface MapLayer {
   type: "bg" | "obj" | "overlay";
   tiles: number[]; // flat array, index = y * width + x
   visible: boolean;
+  /** Optional per-layer tileset override; falls back to MapData.tilesetUrl. */
+  tilesetUrl?: string;
 }
 
 export interface Portal {
@@ -29,6 +31,13 @@ export interface Portal {
   targetSpawn: string;
   direction?: string;  // facing direction on arrival
   transition?: string; // "fade" | "instant"
+}
+
+export interface CombatSettings {
+  attackRangePx?: number;
+  playerAttackCooldownMs?: number;
+  npcHitCooldownMs?: number;
+  damageVariancePct?: number;
 }
 
 export interface MapData {
@@ -52,6 +61,7 @@ export interface MapData {
   musicUrl?: string;
   ambientSoundUrl?: string;
   combatEnabled?: boolean;
+  combatSettings?: CombatSettings;
   status?: string;        // "draft" | "published"
   mapType?: string;       // "public" | "private" | "system"
   editors?: string[];     // profile IDs that can edit this map
@@ -137,4 +147,4 @@ export interface ProfileData {
   createdAt: number;
 }
 
-export type AppMode = "play" | "build" | "sprite-edit" | "npc-edit" | "item-edit";
+export type AppMode = "play" | "build" | "sprite-edit" | "npc-edit" | "item-edit" | "quest-edit";

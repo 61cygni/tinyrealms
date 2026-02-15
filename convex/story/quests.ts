@@ -29,32 +29,32 @@ export const create = mutation({
 });
 
 export const getProgress = query({
-  args: { playerId: v.id("players") },
-  handler: async (ctx, { playerId }) => {
+  args: { profileId: v.id("profiles") },
+  handler: async (ctx, { profileId }) => {
     return await ctx.db
       .query("questProgress")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .collect();
   },
 });
 
 export const startQuest = mutation({
   args: {
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     questId: v.id("quests"),
   },
-  handler: async (ctx, { playerId, questId }) => {
+  handler: async (ctx, { profileId, questId }) => {
     const existing = await ctx.db
       .query("questProgress")
-      .withIndex("by_player_quest", (q) =>
-        q.eq("playerId", playerId).eq("questId", questId)
+      .withIndex("by_profile_quest", (q) =>
+        q.eq("profileId", profileId).eq("questId", questId)
       )
       .first();
 
     if (existing) return existing._id;
 
     return await ctx.db.insert("questProgress", {
-      playerId,
+      profileId,
       questId,
       currentStep: 0,
       status: "active",

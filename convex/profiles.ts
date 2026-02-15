@@ -187,6 +187,60 @@ export const removeItem = mutation({
   },
 });
 
+/** Consume one consumable item and apply its HP delta (+heal, -poison). */
+export const consumeConsumable = mutation({
+  args: {
+    id: v.id("profiles"),
+    itemName: v.string(),
+  },
+  handler: async (ctx, { id, itemName }) => {
+    const profile = await requireOwnedProfile(ctx, id);
+    const itemDef = await ctx.db
+      .query("itemDefs")
+      .withIndex("by_name", (q) => q.eq("name", itemName))
+      .first();
+    if (!itemDef) throw new Error(`Item definition "${itemName}" not found`);
+    if (itemDef.type !== "consumable") {
+      throw new Error(`"${itemName}" is not consumable`);
+    }
+
+    const hpDelta = itemDef.consumeHpDelta ?? 0;
+    if (hpDelta === 0) {
+      throw new Error(`"${itemDef.displayName}" has no HP effect configured`);
+    }
+
+    const items = [...profile.items];
+    const idx = items.findIndex((i) => i.name === itemName);
+    if (idx < 0 || items[idx].quantity <= 0) {
+      throw new Error(`No "${itemDef.displayName}" in inventory`);
+    }
+    if (items[idx].quantity > 1) {
+      items[idx] = { ...items[idx], quantity: items[idx].quantity - 1 };
+    } else {
+      items.splice(idx, 1);
+    }
+
+    const currentHp = profile.stats.hp ?? 0;
+    const maxHp = Math.max(1, profile.stats.maxHp ?? 1);
+    const nextHp = Math.max(0, Math.min(maxHp, currentHp + hpDelta));
+    const stats = {
+      ...profile.stats,
+      hp: nextHp,
+    };
+
+    await ctx.db.patch(id, { items, stats });
+    return {
+      itemName,
+      displayName: itemDef.displayName,
+      hpDelta,
+      hp: nextHp,
+      maxHp,
+      items,
+      stats,
+    };
+  },
+});
+
 /** Set a profile's role */
 export const setRole = mutation({
   args: {

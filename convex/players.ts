@@ -1,6 +1,11 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 
+/**
+ * @deprecated Legacy players APIs retained only for backward compatibility.
+ * New systems should use profiles-based ownership/state.
+ */
+
 export const getOrCreate = mutation({
   args: {},
   handler: async (ctx) => {

@@ -4,35 +4,12 @@
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { MAP_BROWSER_TILESET_OPTIONS } from "../config/tilesheet-config.ts";
+import { MUSIC_OPTIONS } from "../config/music-config.ts";
 import "./MapBrowser.css";
 
 // Available tilesets for the "New Map" form
-const TILESET_OPTIONS = [
-  { label: "Fantasy Interior",  url: "/assets/tilesets/fantasy-interior.png", pw: 768, ph: 7056, tw: 24, th: 24 },
-  { label: "Fantasy Exterior",  url: "/assets/tilesets/fantasy-exterior.png", pw: 768, ph: 7056, tw: 24, th: 24 },
-  { label: "Forest",            url: "/assets/tilesets/forest.png",           pw: 384, ph: 384,  tw: 24, th: 24 },
-  { label: "Gentle",            url: "/assets/tilesets/gentle.png",           pw: 384, ph: 2040, tw: 24, th: 24 },
-  { label: "Gentle Objects",    url: "/assets/tilesets/gentle-obj.png",       pw: 384, ph: 2040, tw: 24, th: 24 },
-  { label: "Mage City",         url: "/assets/tilesets/magecity.png",         pw: 384, ph: 384,  tw: 24, th: 24 },
-  { label: "Mage Objects",      url: "/assets/tilesets/mage-obj.png",         pw: 384, ph: 1536, tw: 24, th: 24 },
-  { label: "Overworld Palma",   url: "/assets/tilesets/overworld_palma.png",  pw: 512, ph: 512,  tw: 16, th: 16 },
-  { label: "PS1 Camineet",      url: "/assets/tilesets/ps1-camineet.png",     pw: 832, ph: 640,  tw: 16, th: 16 },
-  { label: "Mage City (32px)",  url: "/assets/tilesets/mage-city.png",        pw: 256, ph: 1408, tw: 32, th: 32 },
-];
-
-// Available background music
-const MUSIC_OPTIONS = [
-  { label: "(None)", url: "" },
-  { label: "Cozy Cottage", url: "/assets/audio/cozy.m4a" },
-  { label: "PS1 Town", url: "/assets/audio/ps1-town.mp3" },
-  { label: "PS1 Shop", url: "/assets/audio/ps1-shop.mp3" },
-  { label: "PS1 Palma", url: "/assets/audio/ps1-palma.mp3" },
-  { label: "Battle", url: "/assets/audio/battle.mp3" },
-  { label: "Vinyl", url: "/assets/audio/vinyl.mp3" },
-  { label: "Rain", url: "/assets/audio/rain.mp3" },
-  { label: "Title", url: "/assets/audio/title.mp3" },
-  { label: "Mage City", url: "/assets/audio/magecity.mp3" },
-];
+const TILESET_OPTIONS = MAP_BROWSER_TILESET_OPTIONS;
 
 export interface MapBrowserCallbacks {
   onTravel: (mapName: string) => void;

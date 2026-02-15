@@ -12,6 +12,7 @@ import { SpriteEditorPanel } from "../sprited/SpriteEditorPanel.ts";
 import { CharacterPanel } from "./CharacterPanel.ts";
 import { NpcEditorPanel } from "./NpcEditorPanel.ts";
 import { ItemEditorPanel } from "./ItemEditorPanel.ts";
+import { QuestEditorPanel } from "./QuestEditorPanel.ts";
 import type { AppMode, ProfileData } from "../engine/types.ts";
 import "./GameShell.css";
 
@@ -31,6 +32,7 @@ export class GameShell {
   private spriteEditor!: SpriteEditorPanel;
   private npcEditor!: NpcEditorPanel;
   private itemEditor!: ItemEditorPanel;
+  private questEditor!: QuestEditorPanel;
   private characterPanel!: CharacterPanel;
 
   private muteKeyHandler: ((e: KeyboardEvent) => void) | null = null;
@@ -83,6 +85,7 @@ export class GameShell {
     // Wire up map change callback so editor/chat update
     game.onMapChanged = (mapName) => {
       this.chatPanel?.setContext(this.profile, mapName);
+      this.mapEditor?.onMapChanged();
       this.mapEditor?.loadPlacedObjects(mapName);
       this.mapEditor?.loadPlacedItems(mapName);
     };
@@ -109,7 +112,11 @@ export class GameShell {
     document.addEventListener("keydown", this.muteKeyHandler);
 
     // HUD overlay
-    this.hud = new HUD(this.mode);
+    this.hud = new HUD(this.mode, {
+      profileId: isGuest ? undefined : (this.profile._id as string),
+      isGuest,
+      getMapName: () => this.game?.currentMapName,
+    });
     this.el.appendChild(this.hud.el);
 
     // --- Guests get a minimal play-only UI (no chat, editors, or character panel) ---
@@ -141,6 +148,11 @@ export class GameShell {
       this.itemEditor.setGame(game);
       this.el.appendChild(this.itemEditor.el);
 
+      // Quest editor panel (quest-edit mode only)
+      this.questEditor = new QuestEditorPanel();
+      this.questEditor.setGame(game);
+      this.el.appendChild(this.questEditor.el);
+
       // Character panel (available in play mode)
       this.characterPanel = new CharacterPanel();
       this.characterPanel.setGame(game);
@@ -164,6 +176,7 @@ export class GameShell {
     this.spriteEditor?.toggle(this.mode === "sprite-edit");
     this.npcEditor?.toggle(this.mode === "npc-edit");
     this.itemEditor?.toggle(this.mode === "item-edit");
+    this.questEditor?.toggle(this.mode === "quest-edit");
     this.characterPanel?.toggle(this.mode === "play");
   }
 

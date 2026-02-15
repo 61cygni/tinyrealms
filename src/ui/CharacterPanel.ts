@@ -36,8 +36,12 @@ export class CharacterPanel {
   private npcList!: HTMLElement;
   private mapInfo!: HTMLElement;
   private saveBtn!: HTMLButtonElement;
+  private itemUseStatusEl!: HTMLElement;
   // Editing state (admin)
   private editedStats: ProfileData["stats"] | null = null;
+  private itemDefsByName = new Map<string, { type: string; displayName: string; consumeHpDelta?: number }>();
+  private itemDefsLoadedKey = "";
+  private consumingItem = false;
 
   // Sprite animation
   private spriteCanvas: HTMLCanvasElement | null = null;
@@ -165,9 +169,11 @@ export class CharacterPanel {
     const itemsTitle = document.createElement("div");
     itemsTitle.className = "char-section-title";
     itemsTitle.textContent = "Items";
+    this.itemUseStatusEl = document.createElement("div");
+    this.itemUseStatusEl.className = "char-item-use-status";
     this.itemsGrid = document.createElement("div");
     this.itemsGrid.className = "char-items-grid";
-    itemsSection.append(itemsTitle, this.itemsGrid);
+    itemsSection.append(itemsTitle, this.itemUseStatusEl, this.itemsGrid);
 
     // NPCs chatted
     const npcSection = document.createElement("div");
@@ -240,6 +246,7 @@ export class CharacterPanel {
 
     // ---- Items ----
     this.renderItems(p.items);
+    void this.loadItemMetaForInventory(p.items);
 
     // ---- NPCs ----
     this.renderNpcs(p.npcsChatted);
@@ -357,27 +364,86 @@ export class CharacterPanel {
     for (const item of items) {
       const el = document.createElement("div");
       el.className = "char-item";
+      const meta = this.itemDefsByName.get(item.name);
+      const consumeHpDelta =
+        meta?.type === "consumable" ? meta.consumeHpDelta : undefined;
+      const isConsumableClickable =
+        consumeHpDelta != null && consumeHpDelta !== 0;
+      if (isConsumableClickable) {
+        el.classList.add("char-item--consumable");
+        const sign = consumeHpDelta > 0 ? "+" : "";
+        el.title = `Click to use (${sign}${consumeHpDelta} HP)`;
+        el.addEventListener("click", () => this.consumeItem(item.name));
+      }
 
       const nameEl = document.createElement("span");
       nameEl.className = "char-item-name";
-      nameEl.textContent = item.name;
+      nameEl.textContent = meta?.displayName ?? item.name;
 
       const qtyEl = document.createElement("span");
       qtyEl.className = "char-item-qty";
       qtyEl.textContent = `\u00D7${item.quantity}`;
 
       el.append(nameEl, qtyEl);
+      if (isConsumableClickable) {
+        const effectEl = document.createElement("span");
+        effectEl.className = "char-item-effect";
+        const sign = consumeHpDelta > 0 ? "+" : "";
+        effectEl.textContent = `${sign}${consumeHpDelta}HP`;
+        el.appendChild(effectEl);
+      }
 
       if (this.isAdmin) {
         const removeBtn = document.createElement("button");
         removeBtn.className = "char-item-remove";
         removeBtn.textContent = "\u00D7";
         removeBtn.title = "Remove item";
-        removeBtn.addEventListener("click", () => this.removeItem(item.name));
+        removeBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          this.removeItem(item.name);
+        });
         el.appendChild(removeBtn);
       }
 
       this.itemsGrid.appendChild(el);
+    }
+  }
+
+  private async loadItemMetaForInventory(items: { name: string; quantity: number }[]) {
+    const names = [...new Set(items.map((i) => i.name))].sort();
+    const key = names.join("|");
+    if (key === this.itemDefsLoadedKey) return;
+    this.itemDefsLoadedKey = key;
+
+    if (names.length === 0) {
+      this.itemDefsByName.clear();
+      return;
+    }
+
+    try {
+      const convex = getConvexClient();
+      const defs = (await convex.query(api.items.list, {})) as Array<{
+        name: string;
+        type: string;
+        displayName: string;
+        consumeHpDelta?: number;
+      }>;
+      const byName = new Map<string, { type: string; displayName: string; consumeHpDelta?: number }>();
+      for (const def of defs) {
+        if (names.includes(def.name)) {
+          byName.set(def.name, {
+            type: def.type,
+            displayName: def.displayName,
+            consumeHpDelta: def.consumeHpDelta,
+          });
+        }
+      }
+      this.itemDefsByName = byName;
+      if (this.isOpen && this.profile) {
+        this.renderItems(this.profile.items);
+      }
+    } catch (err) {
+      console.warn("Failed to load item definitions for character panel:", err);
     }
   }
 
@@ -532,8 +598,48 @@ export class CharacterPanel {
       this.profile.items = this.profile.items.filter((i) => i.name !== name);
       if (this.game) this.game.profile.items = [...this.profile.items];
       this.renderItems(this.profile.items);
+      void this.loadItemMetaForInventory(this.profile.items);
     } catch (err) {
       console.error("Failed to remove item:", err);
     }
+  }
+
+  private async consumeItem(itemName: string) {
+    if (!this.profile || this.consumingItem) return;
+    this.consumingItem = true;
+    const convex = getConvexClient();
+    try {
+      const result = await convex.mutation((api as any).profiles.consumeConsumable, {
+        id: this.profile._id as Id<"profiles">,
+        itemName,
+      });
+
+      this.profile.items = result.items;
+      this.profile.stats = result.stats;
+      if (this.game) {
+        this.game.profile.items = [...result.items];
+        this.game.profile.stats = { ...result.stats };
+      }
+
+      const sign = result.hpDelta > 0 ? "+" : "";
+      this.itemUseStatusEl.textContent = `${result.displayName}: ${sign}${result.hpDelta} HP (${result.hp}/${result.maxHp})`;
+      this.itemUseStatusEl.className =
+        `char-item-use-status ${result.hpDelta > 0 ? "good" : "bad"}`;
+      this.renderStats(this.profile.stats);
+      this.renderItems(this.profile.items);
+      void this.loadItemMetaForInventory(this.profile.items);
+      window.setTimeout(() => {
+        this.itemUseStatusEl.textContent = "";
+        this.itemUseStatusEl.className = "char-item-use-status";
+      }, 1800);
+    } catch (err: any) {
+      this.itemUseStatusEl.textContent = err?.message ?? "Could not use item";
+      this.itemUseStatusEl.className = "char-item-use-status bad";
+      window.setTimeout(() => {
+        this.itemUseStatusEl.textContent = "";
+        this.itemUseStatusEl.className = "char-item-use-status";
+      }, 1800);
+    }
+    this.consumingItem = false;
   }
 }

@@ -10,6 +10,7 @@ const modes: { key: AppMode; label: string; icon: string }[] = [
   { key: "sprite-edit", label: "Sprites", icon: "\uD83C\uDFA8" }, // 🎨
   { key: "npc-edit", label: "NPCs", icon: "\uD83E\uDDD9" },    // 🧙
   { key: "item-edit", label: "Items", icon: "\u2694\uFE0F" },   // ⚔️
+  { key: "quest-edit", label: "Quests", icon: "\uD83D\uDCDC" }, // 📜
 ];
 
 export interface ModeToggleOptions {
@@ -39,7 +40,7 @@ export class ModeToggle {
 
     for (const m of modes) {
       // Hide build/sprite-edit/npc-edit for non-admins
-      if (!opts.isAdmin && (m.key === "build" || m.key === "sprite-edit" || m.key === "npc-edit" || m.key === "item-edit")) continue;
+      if (!opts.isAdmin && (m.key === "build" || m.key === "sprite-edit" || m.key === "npc-edit" || m.key === "item-edit" || m.key === "quest-edit")) continue;
 
       const btn = document.createElement("button");
       btn.className = `mode-toggle-btn ${this.mode === m.key ? "active" : ""}`;

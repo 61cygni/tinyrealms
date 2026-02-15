@@ -8,6 +8,8 @@ import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { Game } from "../engine/Game.ts";
 import type { Id } from "../../convex/_generated/dataModel";
+import { TILESHEET_CONFIGS } from "../config/tilesheet-config.ts";
+import { ITEM_PICKUP_SOUND_OPTIONS } from "../config/audio-config.ts";
 import "./ItemEditor.css";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +69,7 @@ interface ItemDef {
   isUnique?: boolean;
   tags?: string[];
   lore?: string;
+  consumeHpDelta?: number;
   pickupSoundUrl?: string;
   visibilityType?: "public" | "private" | "system";
 }
@@ -88,18 +91,7 @@ interface TilesetInfo {
   imageHeight: number;
 }
 
-const TILESETS: TilesetInfo[] = [
-  { name: "Fantasy Interior", url: "/assets/tilesets/fantasy-interior.png", tileWidth: 24, tileHeight: 24, imageWidth: 768, imageHeight: 7056 },
-  { name: "Fantasy Exterior", url: "/assets/tilesets/fantasy-exterior.png", tileWidth: 24, tileHeight: 24, imageWidth: 768, imageHeight: 7056 },
-  { name: "Gentle",           url: "/assets/tilesets/gentle.png",           tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 2040 },
-  { name: "Gentle Objects",   url: "/assets/tilesets/gentle-obj.png",       tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 2040 },
-  { name: "Forest",           url: "/assets/tilesets/forest.png",           tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 384 },
-  { name: "Mage City (24px)", url: "/assets/tilesets/magecity.png",         tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 384 },
-  { name: "Mage Objects",     url: "/assets/tilesets/mage-obj.png",         tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 1536 },
-  { name: "Overworld Palma",  url: "/assets/tilesets/overworld_palma.png",  tileWidth: 16, tileHeight: 16, imageWidth: 512, imageHeight: 512 },
-  { name: "PS1 Camineet",     url: "/assets/tilesets/ps1-camineet.png",     tileWidth: 16, tileHeight: 16, imageWidth: 832, imageHeight: 640 },
-  { name: "Mage City (32px)", url: "/assets/tilesets/mage-city.png",        tileWidth: 32, tileHeight: 32, imageWidth: 256, imageHeight: 1408 },
-];
+const TILESETS: TilesetInfo[] = TILESHEET_CONFIGS;
 
 const RARITY_ICONS: Record<string, string> = {
   common: "\u26AA",    // ⚪
@@ -121,14 +113,6 @@ const TYPE_ICONS: Record<string, string> = {
   quest: "\uD83D\uDCDC",       // 📜
   misc: "\uD83D\uDCE6",        // 📦
 };
-
-const ITEM_PICKUP_SOUND_OPTIONS = [
-  "",
-  "/assets/audio/take-item.mp3",
-  "/assets/audio/book.mp3",
-  "/assets/audio/door-open.mp3",
-  "/assets/audio/lighting-a-fire.mp3",
-];
 
 // ---------------------------------------------------------------------------
 // Panel
@@ -171,6 +155,7 @@ export class ItemEditorPanel {
   private stackableCheck!: HTMLInputElement;
   private maxStackInput!: HTMLInputElement;
   private valueInput!: HTMLInputElement;
+  private consumeHpDeltaInput!: HTMLInputElement;
   private uniqueCheck!: HTMLInputElement;
   private loreArea!: HTMLTextAreaElement;
   private statInputs: Record<string, HTMLInputElement> = {};
@@ -395,6 +380,12 @@ export class ItemEditorPanel {
     this.valueInput = this.addNumberField(propRow2, "Value (gold)", "0");
     this.maxStackInput = this.addNumberField(propRow2, "Max Stack", "99");
     propsSec.appendChild(propRow2);
+
+    const propRow3 = document.createElement("div");
+    propRow3.className = "item-editor-field-row";
+    this.consumeHpDeltaInput = this.addNumberField(propRow3, "Consume HP Δ", "0");
+    this.consumeHpDeltaInput.placeholder = "e.g. 25 heal, -10 poison";
+    propsSec.appendChild(propRow3);
 
     const checks = document.createElement("div");
     checks.style.cssText = "display:flex;gap:16px;margin-top:4px;";
@@ -1154,6 +1145,7 @@ export class ItemEditorPanel {
     this.stackableCheck.checked = item.stackable;
     this.maxStackInput.value = String(item.maxStack ?? 99);
     this.valueInput.value = String(item.value);
+    this.consumeHpDeltaInput.value = item.consumeHpDelta != null ? String(item.consumeHpDelta) : "";
     this.uniqueCheck.checked = item.isUnique ?? false;
     this.loreArea.value = item.lore ?? "";
 
@@ -1175,6 +1167,8 @@ export class ItemEditorPanel {
         this.loadTilesetImage(ts);
       }
     }
+    this.updateConsumableFieldState();
+    this.typeSelect.addEventListener("change", () => this.updateConsumableFieldState());
   }
 
   private collectForm(): ItemDef | null {
@@ -1195,6 +1189,11 @@ export class ItemEditorPanel {
     item.stackable = this.stackableCheck.checked;
     item.maxStack = parseInt(this.maxStackInput.value) || 99;
     item.value = parseInt(this.valueInput.value) || 0;
+    const hpDeltaRaw = this.consumeHpDeltaInput.value.trim();
+    item.consumeHpDelta =
+      item.type === "consumable" && hpDeltaRaw !== ""
+        ? (parseInt(hpDeltaRaw) || 0)
+        : undefined;
     item.isUnique = this.uniqueCheck.checked || undefined;
     item.lore = this.loreArea.value.trim() || undefined;
 
@@ -1280,6 +1279,7 @@ export class ItemEditorPanel {
         isUnique: item.isUnique,
         tags: item.tags?.length ? item.tags : undefined,
         lore: item.lore,
+        consumeHpDelta: item.consumeHpDelta,
         pickupSoundUrl: item.pickupSoundUrl,
         visibilityType: item.visibilityType,
       });
@@ -1334,5 +1334,14 @@ export class ItemEditorPanel {
     } catch (err) {
       console.error("Failed to delete item:", err);
     }
+  }
+
+  private updateConsumableFieldState() {
+    if (!this.typeSelect || !this.consumeHpDeltaInput) return;
+    const isConsumable = this.typeSelect.value === "consumable";
+    this.consumeHpDeltaInput.disabled = !isConsumable;
+    this.consumeHpDeltaInput.title = isConsumable
+      ? "Positive heals, negative damages (poison)."
+      : "Only used for consumable items.";
   }
 }

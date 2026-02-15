@@ -5,45 +5,16 @@
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
 import type { Game } from "../engine/Game.ts";
+import { SOUND_FILES } from "../config/audio-config.ts";
+import {
+  OBJECT_SPRITE_SHEETS,
+  type SheetEntry,
+} from "../config/spritesheet-config.ts";
 import "./SpriteEditor.css";
 
 // ---------------------------------------------------------------------------
 // Available sprite sheets (static assets)
 // ---------------------------------------------------------------------------
-interface SheetEntry {
-  name: string;
-  jsonUrl: string;
-}
-
-/** Sprite sheets for object / environment sprites */
-export const OBJECT_SPRITE_SHEETS: SheetEntry[] = [
-  { name: "Cozy Fire",     jsonUrl: "/assets/sprites/cozy-fire.json" },
-  { name: "Cozy Fireplace",jsonUrl: "/assets/sprites/cozy-fireplace.json" },
-  { name: "Cozy Candles",  jsonUrl: "/assets/sprites/cozy-candles.json" },
-  { name: "Cozy Door",     jsonUrl: "/assets/sprites/cozydoor0.json" },
-  { name: "Fountain",      jsonUrl: "/assets/sprites/Fountain_32x32.json" },
-  { name: "Street Lamp",   jsonUrl: "/assets/sprites/Street_Lamp_2_32x32.json" },
-  { name: "Grandfather Clock", jsonUrl: "/assets/sprites/cozyclock.json" },
-  { name: "Phonograph",    jsonUrl: "/assets/sprites/phono.json" },
-  { name: "Music Notes",   jsonUrl: "/assets/sprites/musicnotes.json" },
-  { name: "Soup Pot",      jsonUrl: "/assets/sprites/cozy-souppot.json" },
-  { name: "Sleeping Cat",  jsonUrl: "/assets/sprites/sleeping-cat.json" },
-  { name: "Sleeping Dog",  jsonUrl: "/assets/sprites/sleeping-dog.json" },
-];
-
-/** Sprite sheets for NPC / character sprites */
-export const NPC_SPRITE_SHEETS: SheetEntry[] = [
-  { name: "Villager 2",    jsonUrl: "/assets/characters/villager2.json" },
-  { name: "Villager 3",    jsonUrl: "/assets/characters/villager3.json" },
-  { name: "Villager 4",    jsonUrl: "/assets/characters/villager4.json" },
-  { name: "Villager 5",    jsonUrl: "/assets/characters/villager5.json" },
-  { name: "Villager Jane", jsonUrl: "/assets/characters/villager-jane.json" },
-  { name: "Guest",         jsonUrl: "/assets/characters/guest.json" },
-  { name: "Woman Med",     jsonUrl: "/assets/characters/woman-med.json" },
-  { name: "Chicken",       jsonUrl: "/assets/characters/chicken.json" },
-  { name: "Goat",          jsonUrl: "/assets/characters/goat.json" },
-  { name: "Grey Sheep",    jsonUrl: "/assets/characters/grey-sheep.json" },
-];
 
 /** Raw sprite-sheet JSON shape (TexturePacker / PixiJS format) */
 interface SheetJson {
@@ -111,27 +82,6 @@ function visibilityLabel(v?: "public" | "private" | "system"): string {
   if (type === "public") return "public";
   return "system";
 }
-
-/** Available sound files for the picker */
-export const SOUND_FILES: { label: string; url: string }[] = [
-  { label: "(none)",               url: "" },
-  { label: "Camp Fire",            url: "/assets/audio/camp-fire.mp3" },
-  { label: "Fire Crackling",       url: "/assets/audio/fire-crackling-short.mp3" },
-  { label: "Cat Purring",          url: "/assets/audio/cat-purring.mp3" },
-  { label: "Dog Snoring",          url: "/assets/audio/dog-snoring.mp3" },
-  { label: "Chicken",              url: "/assets/audio/chicken.mp3" },
-  { label: "Clock Tick",           url: "/assets/audio/clock-tick.mp3" },
-  { label: "Grandfather Clock",    url: "/assets/audio/grandfather-clock.mp3" },
-  { label: "Rain",                 url: "/assets/audio/rain.mp3" },
-  { label: "Vinyl",                url: "/assets/audio/vinyl.mp3" },
-  { label: "Writing Desk",         url: "/assets/audio/writing-desk.mp3" },
-  { label: "Book",                 url: "/assets/audio/book.mp3" },
-  { label: "Door Open",            url: "/assets/audio/door-open.mp3" },
-  { label: "Door Close",           url: "/assets/audio/door-close.mp3" },
-  { label: "Fire Start",           url: "/assets/audio/lighting-a-fire.mp3" },
-  { label: "1920s Jazz",           url: "/assets/audio/1920jazz.mp3" },
-  { label: "Soup Pot",             url: "/assets/audio/souppot.mp3" },
-];
 
 const CATEGORIES = ["object"];
 
@@ -296,8 +246,8 @@ export class SpriteEditorPanel {
 
     this.previewCanvas = document.createElement("canvas");
     this.previewCanvas.className = "sprite-editor-preview-canvas";
-    this.previewCanvas.width = 128;
-    this.previewCanvas.height = 128;
+    this.previewCanvas.width = 256;
+    this.previewCanvas.height = 256;
     this.previewCtx = this.previewCanvas.getContext("2d")!;
     this.previewCtx.imageSmoothingEnabled = false;
     previewWrap.appendChild(this.previewCanvas);
@@ -325,6 +275,7 @@ export class SpriteEditorPanel {
 
     this.nameInput = this.addFormField(form, "Name", "text", "My Sprite") as HTMLInputElement;
     this.speedInput = this.addFormField(form, "Anim Speed", "number", "0.15") as HTMLInputElement;
+    this.speedInput.addEventListener("input", () => this.startPreview()); // live-update preview
     this.scaleInput = this.addFormField(form, "Scale", "number", "1") as HTMLInputElement;
     this.anchorXInput = this.addFormField(form, "Anchor X (0–1)", "number", "0.5") as HTMLInputElement;
     this.anchorYInput = this.addFormField(form, "Anchor Y (0–1)", "number", "1") as HTMLInputElement;
@@ -680,7 +631,9 @@ export class SpriteEditorPanel {
     if (!this.loadedSheet) return;
     const { image, frameWidth, frameHeight } = this.loadedSheet;
 
-    const scale = 2;
+    // Adaptive scale: 2x for small sheets, 1x for large ones
+    const maxSheetDim = Math.max(image.width, image.height);
+    const scale = maxSheetDim > 512 ? 1 : 2;
     const w = image.width * scale;
     const h = image.height * scale;
 
@@ -753,7 +706,7 @@ export class SpriteEditorPanel {
     }
 
     if (!this.loadedSheet || !this.selectedAnim) {
-      this.previewCtx.clearRect(0, 0, 128, 128);
+      this.previewCtx.clearRect(0, 0, this.previewCanvas.width, this.previewCanvas.height);
       this.previewLabel.textContent = "Preview";
       return;
     }
@@ -763,8 +716,10 @@ export class SpriteEditorPanel {
 
     this.previewLabel.textContent = `Preview: ${this.selectedAnim}`;
 
+    // PixiJS animationSpeed is a fraction-of-frame-per-tick at ~60 fps.
+    // To match in setInterval: intervalMs = 1000 / (60 * speed).
     const speed = parseFloat(this.speedInput.value) || 0.15;
-    const intervalMs = Math.max(30, speed * 1000);
+    const intervalMs = Math.max(30, 1000 / (60 * speed));
 
     this.drawPreviewFrame(frames);
 
@@ -778,17 +733,21 @@ export class SpriteEditorPanel {
     if (!this.loadedSheet) return;
     const ctx = this.previewCtx;
     const f = frames[this.previewFrame % frames.length];
-    const canvasSize = 128;
+    const cw = this.previewCanvas.width;
+    const ch = this.previewCanvas.height;
 
-    ctx.clearRect(0, 0, canvasSize, canvasSize);
+    ctx.clearRect(0, 0, cw, ch);
 
-    // Scale to fit canvas while preserving aspect ratio
+    // Scale to fit canvas while preserving aspect ratio.
+    // For small frames (< canvas) use integer scale; for large ones use fractional.
     const maxDim = Math.max(f.w, f.h);
-    const scale = Math.floor(canvasSize / maxDim) || 1;
-    const dw = f.w * scale;
-    const dh = f.h * scale;
-    const dx = (canvasSize - dw) / 2;
-    const dy = (canvasSize - dh) / 2;
+    const scale = maxDim <= cw
+      ? Math.max(1, Math.floor(cw / maxDim))   // integer upscale for pixel art
+      : cw / maxDim;                             // fractional downscale for large sprites
+    const dw = Math.round(f.w * scale);
+    const dh = Math.round(f.h * scale);
+    const dx = Math.round((cw - dw) / 2);
+    const dy = Math.round((ch - dh) / 2);
 
     ctx.drawImage(this.loadedSheet.image, f.x, f.y, f.w, f.h, dx, dy, dw, dh);
   }

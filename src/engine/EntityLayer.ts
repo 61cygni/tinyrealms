@@ -5,6 +5,7 @@ import {
   TextStyle,
   AnimatedSprite,
   Spritesheet,
+  ColorMatrixFilter,
 } from "pixi.js";
 import { loadSpriteSheet } from "./SpriteLoader.ts";
 import type { Game } from "./Game.ts";
@@ -14,23 +15,25 @@ import { NPC } from "./NPC.ts";
 import type { NPCConfig, DialogueLine } from "./NPC.ts";
 import { splashManager } from "../splash/SplashManager.ts";
 import { createDialogueSplash } from "../splash/screens/DialogueSplash.ts";
-import type { DialogueNode } from "../splash/screens/DialogueSplash.ts";
-
-const MOVE_SPEED = 120; // pixels per second
-const SPRINT_MULTIPLIER = 1.5; // hold Shift to move faster
-const ANIM_SPEED = 0.12; // frames per tick (PixiJS AnimatedSprite)
-const NPC_INTERACT_RADIUS = 48; // pixels
-// ---------------------------------------------------------------------------
-// Remote player interpolation
-// ---------------------------------------------------------------------------
-// Instead of extrapolating into the future (which amplifies velocity noise),
-// we buffer the last few server snapshots and render in the *recent past*,
-// smoothly lerping between two known positions.  This gives perfectly smooth
-// movement at the cost of INTERP_DELAY_MS of visual latency — imperceptible
-// in a co-op world.
-const INTERP_DELAY_MS = 300;       // render this far behind "now"
-const INTERP_MAX_SNAPSHOTS = 6;    // keep a small ring buffer per player
-const REMOTE_SNAP_DISTANCE_PX = 96; // snap if correction is enormous (teleport)
+import { createAiChatSplash } from "../splash/screens/AiChatSplash.ts";
+import { NpcDialogueController } from "../npc/dialogue/NpcDialogueController.ts";
+import { getConvexClient } from "../lib/convexClient.ts";
+import { api } from "../../convex/_generated/api";
+import {
+  COMBAT_ATTACK_KEY,
+  HIT_SHAKE_DURATION_MS,
+  HIT_SHAKE_MAGNITUDE_PX,
+  HIT_FLASH_DURATION_MS,
+} from "../config/combat-config.ts";
+import {
+  NPC_INTERACT_RADIUS_PX,
+  PLAYER_ANIM_SPEED,
+  PLAYER_MOVE_SPEED,
+  PLAYER_SPRINT_MULTIPLIER,
+  REMOTE_INTERP_DELAY_MS,
+  REMOTE_INTERP_MAX_SNAPSHOTS,
+  REMOTE_SNAP_DISTANCE_PX,
+} from "../config/multiplayer-config.ts";
 
 /** A position snapshot received from the server */
 interface RemoteSnapshot {
@@ -85,7 +88,11 @@ export class EntityLayer {
   private npcs: NPC[] = [];
   private nearestNPC: NPC | null = null;
   inDialogue = false;
+  private engagedNpcId: string | null = null;
   private npcAmbientHandles = new Map<string, import("./AudioManager.ts").SfxHandle>();
+  private npcDialogueController = new NpcDialogueController();
+  private npcInteractionHintByInstanceName = new Map<string, "chat" | "attack" | "none">();
+  private npcInteractionHintPending = new Set<string>();
 
   // Remote players
   private remotePlayers: Map<
@@ -164,7 +171,7 @@ export class EntityLayer {
       if (!downFrames || downFrames.length === 0) return;
 
       this.playerSprite = new AnimatedSprite(downFrames);
-      this.playerSprite.animationSpeed = ANIM_SPEED;
+      this.playerSprite.animationSpeed = PLAYER_ANIM_SPEED;
       this.playerSprite.anchor.set(0.5, 1);
       this.playerSprite.play();
 
@@ -301,6 +308,8 @@ export class EntityLayer {
       mapObjectId: string;
       spriteDefName: string;
       instanceName?: string;
+      currentHp?: number;
+      maxHp?: number;
       x: number;
       y: number;
       vx: number;
@@ -342,6 +351,11 @@ export class EntityLayer {
         if (existing.serverDriven) {
           existing.setServerPosition(s.x, s.y, s.vx, s.vy, s.direction);
         }
+        existing.setCombatHp(s.currentHp, s.maxHp);
+        // Keep instance identity in sync (important for AI mode resolution).
+        if (s.instanceName && existing.instanceName !== s.instanceName) {
+          existing.instanceName = s.instanceName;
+        }
       } else {
         // Create new NPC instance
         const def = defsMap.get(s.spriteDefName);
@@ -380,6 +394,7 @@ export class EntityLayer {
         this.addNPC({
           id: npcId,
           name: displayName,
+          instanceName: s.instanceName,
           spriteSheet: def.spriteSheetUrl,
           x: s.x,
           y: s.y,
@@ -398,6 +413,8 @@ export class EntityLayer {
           dialogue,
           serverDriven: true,
         });
+        const created = this.npcs.find((n) => n.id === npcId);
+        if (created) created.setCombatHp(s.currentHp, s.maxHp);
       }
     }
 
@@ -438,10 +455,12 @@ export class EntityLayer {
       this.updateNPCInteraction(input);
     }
 
-    // NPCs always wander (even during dialogue, for ambiance)
+    // NPCs wander normally, but freeze the currently engaged NPC during dialogue.
     const collisionCheck = (px: number, py: number) => this.isBlocked(px, py);
     for (const npc of this.npcs) {
-      npc.update(dt, collisionCheck);
+      if (!(this.inDialogue && this.engagedNpcId === npc.id)) {
+        npc.update(dt, collisionCheck);
+      }
 
       // Update NPC ambient sound volume based on distance
       const ambHandle = this.npcAmbientHandles.get(npc.id);
@@ -470,7 +489,7 @@ export class EntityLayer {
     // We render at (now - INTERP_DELAY_MS) so we always have two snapshots
     // to lerp between, giving perfectly smooth movement.
     const now = performance.now();
-    const renderTime = now - INTERP_DELAY_MS;
+    const renderTime = now - REMOTE_INTERP_DELAY_MS;
 
     for (const [, remote] of this.remotePlayers) {
       const snaps = remote.snapshots;
@@ -591,7 +610,7 @@ export class EntityLayer {
     const prevY = this.playerY;
 
     const isSprinting = input.isDown("Shift");
-    const speed = MOVE_SPEED * (isSprinting ? SPRINT_MULTIPLIER : 1);
+    const speed = PLAYER_MOVE_SPEED * (isSprinting ? PLAYER_SPRINT_MULTIPLIER : 1);
     const newX = this.playerX + dx * speed * dt;
     const newY = this.playerY + dy * speed * dt;
 
@@ -648,7 +667,7 @@ export class EntityLayer {
   private updateNPCInteraction(input: InputManager) {
     // Find nearest NPC within interact radius
     let nearest: NPC | null = null;
-    let nearestDist = NPC_INTERACT_RADIUS;
+    let nearestDist = NPC_INTERACT_RADIUS_PX;
 
     for (const npc of this.npcs) {
       const dist = npc.distanceTo(this.playerX, this.playerY);
@@ -664,18 +683,73 @@ export class EntityLayer {
     }
     this.nearestNPC = nearest;
     if (nearest) {
-      nearest.setPromptVisible(true);
+      this.ensureNpcInteractionHintLoaded(nearest);
+      const hint = this.getNpcInteractionHint(nearest);
+      if (hint === "chat") {
+        nearest.setPrompt("[E] Talk", true);
+      } else if (hint === "attack") {
+        const hp = nearest.currentHp;
+        const maxHp = nearest.maxHp;
+        const hpSuffix =
+          typeof hp === "number" && typeof maxHp === "number" && maxHp > 0
+            ? ` (${Math.max(0, Math.round(hp))}/${Math.max(1, Math.round(maxHp))})`
+            : "";
+        nearest.setPrompt(`[${COMBAT_ATTACK_KEY.toUpperCase()}] Attack${hpSuffix}`, true);
+      } else {
+        nearest.setPrompt("[E] Interact", true);
+      }
     }
 
-    // Interact on E press (guests can't talk to NPCs)
-    if (nearest && !this.game.isGuest && (input.wasJustPressed("e") || input.wasJustPressed("E"))) {
-      this.startDialogue(nearest);
+    // Interact on E press:
+    // - chat-enabled NPCs: open dialogue + play interact sound
+    // - chat-disabled NPCs: still play interact sound (e.g. bark) and face player
+    // - hostile combat NPCs: use combat key instead, no E interaction
+    if (
+      nearest &&
+      this.getNpcInteractionHint(nearest) !== "attack" &&
+      (input.wasJustPressed("e") || input.wasJustPressed("E"))
+    ) {
+      void this.startDialogue(nearest);
     }
   }
 
-  private startDialogue(npc: NPC) {
-    this.inDialogue = true;
+  private getNpcInteractionHint(npc: NPC): "chat" | "attack" | "none" {
+    const instanceName = npc.instanceName;
+    if (!instanceName) return "chat";
+    return this.npcInteractionHintByInstanceName.get(instanceName) ?? "none";
+  }
 
+  private ensureNpcInteractionHintLoaded(npc: NPC) {
+    const instanceName = npc.instanceName;
+    if (!instanceName) return;
+    if (this.npcInteractionHintByInstanceName.has(instanceName)) return;
+    if (this.npcInteractionHintPending.has(instanceName)) return;
+    this.npcInteractionHintPending.add(instanceName);
+
+    const convex = getConvexClient();
+    void convex
+      .query(api.npcProfiles.getByName, { name: instanceName })
+      .then((profile: any) => {
+        const hostile = Array.isArray(profile?.tags) && profile.tags.includes("hostile");
+        const canChat = profile?.aiPolicy?.capabilities?.canChat !== false;
+        const combatEnabled = !!this.game.currentMapData?.combatEnabled;
+        const hint: "chat" | "attack" | "none" = hostile && combatEnabled
+          ? "attack"
+          : canChat
+            ? "chat"
+            : "none";
+        this.npcInteractionHintByInstanceName.set(instanceName, hint);
+      })
+      .catch(() => {
+        // Default to chat if profile lookup fails or doesn't exist.
+        this.npcInteractionHintByInstanceName.set(instanceName, "chat");
+      })
+      .finally(() => {
+        this.npcInteractionHintPending.delete(instanceName);
+      });
+  }
+
+  private async startDialogue(npc: NPC) {
     // Play greeting / interact sound
     if (npc.interactSoundUrl) {
       this.game.audio.playOneShot(npc.interactSoundUrl, 0.7);
@@ -684,31 +758,37 @@ export class EntityLayer {
     // NPC faces the player
     npc.faceToward(this.playerX, this.playerY);
 
-    // Convert NPC dialogue to DialogueNode format
-    const nodes: DialogueNode[] = npc.dialogue.map((line) => ({
-      id: line.id,
-      text: line.text,
-      speaker: npc.name,
-      responses: line.responses?.map((r) => ({
-        text: r.text,
-        nextNodeId: r.nextId,
-      })),
-      nextNodeId: line.nextId,
-    }));
+    const mode = await this.npcDialogueController.resolveMode(npc);
+    if (mode.kind === "disabled") return;
+
+    this.inDialogue = true;
+    this.engagedNpcId = npc.id;
 
     splashManager.push({
       id: `dialogue-${npc.id}`,
       create: (props) =>
-        createDialogueSplash({
-          ...props,
-          nodes,
-          startNodeId: nodes[0]?.id,
-          npcName: npc.name,
-        }),
+        mode.kind === "ai"
+          ? createAiChatSplash({
+              ...props,
+              npcName: mode.npcName,
+              onSend: (message) =>
+                this.npcDialogueController.sendAiMessage({
+                  npcProfileName: mode.npcProfileName,
+                  userMessage: message,
+                  mapName: this.game.currentMapName,
+                }),
+            })
+          : createDialogueSplash({
+              ...props,
+              nodes: mode.nodes,
+              startNodeId: mode.nodes[0]?.id,
+              npcName: mode.npcName,
+            }),
       transparent: true,
-      pausesGame: false, // NPCs keep wandering
+      pausesGame: false,
       onClose: () => {
         this.inDialogue = false;
+        this.engagedNpcId = null;
       },
     });
   }
@@ -797,7 +877,7 @@ export class EntityLayer {
         time: now,
       });
       // Trim old snapshots (keep only the last N)
-      while (remote.snapshots.length > INTERP_MAX_SNAPSHOTS) {
+      while (remote.snapshots.length > REMOTE_INTERP_MAX_SNAPSHOTS) {
         remote.snapshots.shift();
       }
 
@@ -828,7 +908,7 @@ export class EntityLayer {
       if (!downFrames || downFrames.length === 0) return;
 
       const sprite = new AnimatedSprite(downFrames);
-      sprite.animationSpeed = ANIM_SPEED;
+      sprite.animationSpeed = PLAYER_ANIM_SPEED;
       sprite.anchor.set(0.5, 1);
 
       if (remote.animation === "walk") {
@@ -875,5 +955,54 @@ export class EntityLayer {
 
   isPlayerMoving(): boolean {
     return this.isMoving;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Combat hit effects
+  // ---------------------------------------------------------------------------
+
+  /** Find an NPC by its profile instance name (for targeting hit effects). */
+  getNpcByInstanceName(instanceName: string): NPC | null {
+    return this.npcs.find((n) => n.instanceName === instanceName) ?? null;
+  }
+
+  /**
+   * Shake + red flash the player sprite when the player takes damage.
+   */
+  playPlayerHitEffect() {
+    const target = this.playerSprite ?? this.playerFallback;
+    if (!target) return;
+
+    const redFilter = new ColorMatrixFilter();
+    redFilter.matrix = [
+      1.6, 0.4, 0.1, 0, 0,
+      0.1, 0.3, 0.1, 0, 0,
+      0.1, 0.1, 0.3, 0, 0,
+      0,   0,   0,   1, 0,
+    ];
+    target.filters = [redFilter];
+    setTimeout(() => {
+      if (target.filters) {
+        target.filters = [];
+      }
+    }, HIT_FLASH_DURATION_MS);
+
+    const origX = target.x;
+    const origY = target.y;
+    const start = performance.now();
+    const shake = () => {
+      const elapsed = performance.now() - start;
+      if (elapsed >= HIT_SHAKE_DURATION_MS) {
+        target.x = origX;
+        target.y = origY;
+        return;
+      }
+      const progress = elapsed / HIT_SHAKE_DURATION_MS;
+      const mag = HIT_SHAKE_MAGNITUDE_PX * (1 - progress);
+      target.x = origX + (Math.random() * 2 - 1) * mag;
+      target.y = origY + (Math.random() * 2 - 1) * mag;
+      requestAnimationFrame(shake);
+    };
+    requestAnimationFrame(shake);
   }
 }

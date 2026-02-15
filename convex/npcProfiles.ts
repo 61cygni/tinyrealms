@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalQuery, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 const visibilityTypeValidator = v.union(
@@ -7,6 +7,25 @@ const visibilityTypeValidator = v.union(
   v.literal("private"),
   v.literal("system"),
 );
+const npcTypeValidator = v.union(v.literal("procedural"), v.literal("ai"));
+const aggressionValidator = v.union(
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+);
+const aiPolicyValidator = v.object({
+  capabilities: v.optional(
+    v.object({
+      canChat: v.optional(v.boolean()),
+      canNavigate: v.optional(v.boolean()),
+      canPickupItems: v.optional(v.boolean()),
+      canUseShops: v.optional(v.boolean()),
+      canCombat: v.optional(v.boolean()),
+      canAffectQuests: v.optional(v.boolean()),
+      canUsePortals: v.optional(v.boolean()),
+    }),
+  ),
+});
 
 function getVisibilityType(profile: any): "public" | "private" | "system" {
   return (profile.visibilityType ?? "system") as "public" | "private" | "system";
@@ -26,6 +45,15 @@ async function isSuperuserUser(ctx: any, userId: string | null): Promise<boolean
     .withIndex("by_user", (q: any) => q.eq("userId", userId))
     .collect();
   return profiles.some((p: any) => p.role === "superuser");
+}
+
+function slugifyInstanceName(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -58,6 +86,17 @@ export const getByName = query({
     if (superuser) return profile;
     if (!canReadNpcProfile(profile, userId)) return null;
     return profile;
+  },
+});
+
+/** Internal lookup (no auth visibility filter) for server-side NPC pipelines. */
+export const getByNameInternal = internalQuery({
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => {
+    return await ctx.db
+      .query("npcProfiles")
+      .withIndex("by_name", (q) => q.eq("name", name))
+      .first();
   },
 });
 
@@ -151,6 +190,11 @@ export const save = mutation({
       )
     ),
     tags: v.optional(v.array(v.string())),
+    aggression: v.optional(aggressionValidator),
+    npcType: v.optional(npcTypeValidator),
+    aiEnabled: v.optional(v.boolean()),
+    braintrustSlug: v.optional(v.string()),
+    aiPolicy: v.optional(aiPolicyValidator),
     visibilityType: v.optional(visibilityTypeValidator),
   },
   handler: async (ctx, args) => {
@@ -228,19 +272,40 @@ export const assignInstanceName = mutation({
       throw new Error("Permission denied: only map owner or superuser can name this NPC instance.");
     }
 
-    // Ensure instance name is unique across all mapObjects
+    const currentName = obj.instanceName ?? "";
+    const baseFromSprite = slugifyInstanceName(obj.spriteDefName || "npc");
+    const requested = slugifyInstanceName(instanceName);
+    const baseName = requested || currentName || baseFromSprite || "npc";
+
+    // Ensure instance name is unique across mapObjects + npcProfiles.
+    // If user left it blank, auto-generate with numeric suffixes.
     const allObjects = await ctx.db.query("mapObjects").collect();
-    const conflict = allObjects.find(
-      (o) => o.instanceName === instanceName && o._id !== mapObjectId
+    const usedObjectNames = new Set(
+      allObjects
+        .filter((o) => o._id !== mapObjectId && typeof o.instanceName === "string")
+        .map((o) => String(o.instanceName)),
     );
-    if (conflict) {
-      throw new Error(`Instance name "${instanceName}" is already in use on map "${conflict.mapName}"`);
+
+    let resolvedName = baseName;
+    let suffix = 2;
+    while (true) {
+      const objectConflict = usedObjectNames.has(resolvedName);
+      const profileConflict = await ctx.db
+        .query("npcProfiles")
+        .withIndex("by_name", (q) => q.eq("name", resolvedName))
+        .first();
+      const conflictsWithDifferentProfile =
+        !!profileConflict && resolvedName !== currentName;
+
+      if (!objectConflict && !conflictsWithDifferentProfile) break;
+      resolvedName = `${baseName}-${suffix++}`;
     }
 
     await ctx.db.patch(mapObjectId, {
-      instanceName,
+      instanceName: resolvedName,
       updatedAt: Date.now(),
     });
+    return { instanceName: resolvedName };
   },
 });
 
@@ -269,5 +334,53 @@ export const remove = mutation({
       throw new Error(`Permission denied: only superusers can delete system NPC profiles.`);
     }
     await ctx.db.delete(id);
+  },
+});
+
+/** Clear AI conversation history + memory summary for one NPC profile. */
+export const clearConversationHistory = mutation({
+  args: {
+    profileId: v.id("profiles"),
+    npcProfileId: v.id("npcProfiles"),
+  },
+  handler: async (ctx, { profileId, npcProfileId }) => {
+    const userId = await getAuthUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    const editorProfile = await ctx.db.get(profileId);
+    if (!editorProfile) throw new Error("Profile not found");
+    if (editorProfile.userId !== userId) throw new Error("Not your profile");
+    const isSuperuser = (editorProfile as any).role === "superuser";
+
+    const npcProfile = await ctx.db.get(npcProfileId);
+    if (!npcProfile) throw new Error("NPC profile not found");
+    const isOwner = (npcProfile as any).createdByUser === userId;
+    if (!isSuperuser && !isOwner) {
+      throw new Error("Permission denied: only owner or superuser can clear history.");
+    }
+
+    const npcName = String((npcProfile as any).name ?? "");
+    if (!npcName) throw new Error("NPC profile has no name");
+
+    const convRows = await ctx.db
+      .query("npcConversations")
+      .withIndex("by_npc", (q) => q.eq("npcProfileName", npcName))
+      .collect();
+    for (const row of convRows) {
+      await ctx.db.delete(row._id);
+    }
+
+    const memRows = await ctx.db
+      .query("npcMemories")
+      .withIndex("by_npc", (q) => q.eq("npcProfileName", npcName))
+      .collect();
+    for (const row of memRows) {
+      await ctx.db.delete(row._id);
+    }
+
+    return {
+      npcProfileName: npcName,
+      conversationsDeleted: convRows.length,
+      memoriesDeleted: memRows.length,
+    };
   },
 });

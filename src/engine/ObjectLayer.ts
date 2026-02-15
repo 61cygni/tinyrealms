@@ -16,6 +16,7 @@ export interface SpriteDefInfo {
   name: string;
   spriteSheetUrl: string;
   defaultAnimation: string;
+  animationSpeed: number;     // PixiJS animationSpeed (e.g. 0.05 slow, 0.3 fast)
   scale: number;
   frameWidth: number;
   frameHeight: number;
@@ -44,6 +45,8 @@ type DoorState = "closed" | "opening" | "open" | "closing";
 interface RenderedObject {
   id: string;
   defName: string;
+  animationSpeed: number;
+  layer: number;              // editor layer index (0-1 bg, 2-3 obj, 4 overlay)
   sprite: AnimatedSprite;
   container: Container;       // wrapper for sprite + glow + prompt
   x: number;
@@ -75,7 +78,13 @@ interface RenderedObject {
 }
 
 export class ObjectLayer {
+  /** Main container for obj-layer objects (y-sorted, same tier as entities) */
   container: Container;
+  /** Container for background-layer objects (renders behind entities) */
+  bgContainer: Container;
+  /** Container for overlay-layer objects (renders above entities) */
+  overlayContainer: Container;
+
   private rendered: RenderedObject[] = [];
   private sheetCache = new Map<string, Spritesheet>();
   private defCache = new Map<string, SpriteDefInfo>();
@@ -99,15 +108,33 @@ export class ObjectLayer {
     | null = null;
 
   constructor() {
+    this.bgContainer = new Container();
+    this.bgContainer.label = "objects-bg";
+    this.bgContainer.sortableChildren = true;
+    this.bgContainer.zIndex = 4; // above base map tiles, below entities
+
     this.container = new Container();
     this.container.label = "objects";
     this.container.sortableChildren = true;
-    this.container.zIndex = 50; // between map and overlay
+    this.container.zIndex = 50; // same tier as entities (y-sorted)
+
+    this.overlayContainer = new Container();
+    this.overlayContainer.label = "objects-overlay";
+    this.overlayContainer.sortableChildren = true;
+    this.overlayContainer.zIndex = 55; // above entities, below map overlay tiles
   }
 
   /** Set the audio manager for ambient sounds */
   setAudio(audio: AudioManager) {
     this.audio = audio;
+  }
+
+  /** Return the correct parent container for the given editor layer index.
+   *  Layers 0-1 (bg) → bgContainer, 2-3 (obj) → container, 4 (overlay) → overlayContainer */
+  private parentForLayer(layer: number): Container {
+    if (layer <= 1) return this.bgContainer;
+    if (layer >= 4) return this.overlayContainer;
+    return this.container;
   }
 
   /** Cache a sprite definition (called when loading from Convex) */
@@ -206,13 +233,14 @@ export class ObjectLayer {
       objContainer.x = obj.x;
       objContainer.y = obj.y;
       objContainer.zIndex = Math.round(obj.y);
+      const layer = obj.layer ?? 2; // default to obj0
 
       // Use whichever frames are available for initial creation
       const initFrames = activeFrames || onFrames || offFrames || doorClosedFrames;
       const sprite = new AnimatedSprite(initFrames!);
       sprite.anchor.set(0.5, 1.0);
       sprite.scale.set(def.scale);
-      sprite.animationSpeed = 0.1;
+      sprite.animationSpeed = def.animationSpeed;
       if (!activeFrames) {
         // No frames for the current state → hide sprite
         sprite.visible = false;
@@ -230,6 +258,8 @@ export class ObjectLayer {
       const entry: RenderedObject = {
         id: obj.id,
         defName: obj.spriteDefName,
+        animationSpeed: def.animationSpeed,
+        layer,
         container: objContainer,
         sprite,
         x: obj.x,
@@ -297,7 +327,7 @@ export class ObjectLayer {
         entry.prompt = prompt;
       }
 
-      this.container.addChild(objContainer);
+      this.parentForLayer(layer).addChild(objContainer);
 
       // Start ambient sound if defined (and object is "on" or non-toggleable)
       if (def.ambientSoundUrl && this.audio) {
@@ -332,7 +362,7 @@ export class ObjectLayer {
       const r = this.rendered.splice(idx, 1)[0];
       r.sfxHandle?.stop();
       r.onSfxHandle?.stop();
-      this.container.removeChild(r.container);
+      this.parentForLayer(r.layer).removeChild(r.container);
       r.container.destroy({ children: true });
       if (this.nearestToggleable === r) this.nearestToggleable = null;
     }
@@ -518,7 +548,7 @@ export class ObjectLayer {
     const frames = isOn ? r.onFrames : r.offFrames;
     if (frames && frames.length > 0) {
       r.sprite.textures = frames;
-      r.sprite.animationSpeed = 0.1;
+      r.sprite.animationSpeed = r.animationSpeed;
       r.sprite.visible = true;
       if (isOn) {
         r.sprite.gotoAndPlay(0);
@@ -639,7 +669,7 @@ export class ObjectLayer {
 
       if (frames && frames.length > 0) {
         r.sprite.textures = frames;
-        r.sprite.animationSpeed = 0.1;
+        r.sprite.animationSpeed = r.animationSpeed;
         r.sprite.loop = false;
         r.sprite.visible = true;
         r.sprite.onComplete = () => {
@@ -663,7 +693,7 @@ export class ObjectLayer {
 
       if (frames && frames.length > 0) {
         r.sprite.textures = frames;
-        r.sprite.animationSpeed = 0.1;
+        r.sprite.animationSpeed = r.animationSpeed;
         r.sprite.loop = false;
         r.sprite.visible = true;
         r.sprite.onComplete = () => {
@@ -697,7 +727,7 @@ export class ObjectLayer {
       // No open animation — hold last frame of opening
       r.sprite.gotoAndStop(r.sprite.totalFrames - 1);
     }
-    r.sprite.animationSpeed = 0.1;
+    r.sprite.animationSpeed = r.animationSpeed;
   }
 
   /** Set a door to the fully-closed resting state */
@@ -714,7 +744,7 @@ export class ObjectLayer {
       // No closed animation — hold last frame of closing
       r.sprite.gotoAndStop(r.sprite.totalFrames - 1);
     }
-    r.sprite.animationSpeed = 0.1;
+    r.sprite.animationSpeed = r.animationSpeed;
 
     // Add collision back when door finishes closing
     if (r.doorCollisionTiles && r.doorCollisionTiles.length > 0) {
@@ -748,7 +778,7 @@ export class ObjectLayer {
       sprite.anchor.set(0.5, 1.0);
       sprite.scale.set(def.scale);
       sprite.alpha = 0.45;
-      sprite.animationSpeed = 0.1;
+      sprite.animationSpeed = def.animationSpeed;
       sprite.play();
       sprite.zIndex = 99999; // always on top
       sprite.visible = false; // hidden until first updateGhost
@@ -784,7 +814,7 @@ export class ObjectLayer {
     for (const r of this.rendered) {
       r.sfxHandle?.stop();
       r.onSfxHandle?.stop();
-      this.container.removeChild(r.container);
+      this.parentForLayer(r.layer).removeChild(r.container);
       r.container.destroy({ children: true });
     }
     this.rendered = [];
@@ -793,6 +823,8 @@ export class ObjectLayer {
 
   destroy() {
     this.clear();
+    this.bgContainer.destroy();
     this.container.destroy();
+    this.overlayContainer.destroy();
   }
 }

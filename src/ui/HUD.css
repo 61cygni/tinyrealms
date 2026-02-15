@@ -4,7 +4,7 @@
   right: 60px;  /* leave room for the character toggle button */
   z-index: 100;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
 }
 
@@ -18,4 +18,113 @@
   letter-spacing: 1px;
   color: var(--text-muted);
   font-family: var(--font-mono);
+}
+
+.hud-quests {
+  width: 320px;
+  max-height: 42vh;
+  overflow: auto;
+  padding: 8px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.hud-quests-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.hud-quests-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.hud-quest-btn {
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.hud-quest-collapse-btn {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+}
+
+.hud-quest-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hud-quest-collapse-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hud-quest-status {
+  min-height: 16px;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.hud-quests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hud-quest-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.hud-quest-card {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.hud-quest-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.hud-quest-desc {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.hud-quest-progress {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.hud-quest-deadline {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #ffb96b;
 }

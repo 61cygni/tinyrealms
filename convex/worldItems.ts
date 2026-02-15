@@ -186,6 +186,13 @@ export const pickup = mutation({
     }
     await ctx.db.patch(profileId, { items });
 
+    // Quest progress: item pickup/objective tracking.
+    await ctx.runMutation(internal.quests.recordItemProgress, {
+      profileId,
+      itemDefName: worldItem.itemDefName,
+      quantity: worldItem.quantity,
+    });
+
     // Mark as picked up (or delete if non-respawning)
     if (worldItem.respawn) {
       await ctx.db.patch(worldItemId, {

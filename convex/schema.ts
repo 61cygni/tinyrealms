@@ -29,6 +29,7 @@ export default defineSchema({
         ),
         tiles: v.string(), // JSON-encoded flat array of tile indices (-1 = empty)
         visible: v.boolean(),
+        tilesetUrl: v.optional(v.string()), // optional per-layer tileset override
       })
     ),
     animatedTiles: v.optional(v.array(
@@ -67,6 +68,12 @@ export default defineSchema({
     musicUrl: v.optional(v.string()),        // background music path
     ambientSoundUrl: v.optional(v.string()), // ambient sound loop (rain, wind)
     combatEnabled: v.optional(v.boolean()),  // is combat allowed on this map?
+    combatSettings: v.optional(v.object({
+      attackRangePx: v.optional(v.number()),
+      playerAttackCooldownMs: v.optional(v.number()),
+      npcHitCooldownMs: v.optional(v.number()),
+      damageVariancePct: v.optional(v.number()),
+    })),
     status: v.optional(v.string()),          // "draft" | "published" (default "published")
     mapType: v.optional(v.string()),         // "public" | "private" | "system" (default "private")
     editors: v.optional(v.array(v.id("profiles"))), // per-map editor list
@@ -183,12 +190,32 @@ export default defineSchema({
       quantity: v.number(),
     }))),
     tags: v.optional(v.array(v.string())), // general-purpose tags (e.g. "shopkeeper", "quest-giver")
+    aggression: v.optional(v.union(
+      v.literal("low"),
+      v.literal("medium"),
+      v.literal("high"),
+    )),
+    npcType: v.optional(v.union(v.literal("procedural"), v.literal("ai"))),
+    aiEnabled: v.optional(v.boolean()),
+    braintrustSlug: v.optional(v.string()),
+    aiPolicy: v.optional(v.object({
+      capabilities: v.optional(v.object({
+        canChat: v.optional(v.boolean()),
+        canNavigate: v.optional(v.boolean()),
+        canPickupItems: v.optional(v.boolean()),
+        canUseShops: v.optional(v.boolean()),
+        canCombat: v.optional(v.boolean()),
+        canAffectQuests: v.optional(v.boolean()),
+        canUsePortals: v.optional(v.boolean()),
+      })),
+    })),
     visibilityType: v.optional(v.string()), // "public" | "private" | "system" (legacy undefined => system)
     createdByUser: v.optional(v.id("users")), // owner user for private/public NPC profiles
     updatedAt: v.number(),
   })
     .index("by_name", ["name"])
     .index("by_spriteDefName", ["spriteDefName"])
+    .index("by_npcType", ["npcType"])
     .index("by_visibilityType", ["visibilityType"])
     .index("by_createdByUser", ["createdByUser"]),
 
@@ -322,10 +349,51 @@ export default defineSchema({
     targetX: v.optional(v.float64()),     // wander target (null = idle)
     targetY: v.optional(v.float64()),
     idleUntil: v.optional(v.number()),    // timestamp: don't move until this time
+    currentHp: v.optional(v.number()),    // combat: current health
+    maxHp: v.optional(v.number()),        // combat: max health
+    defeatedAt: v.optional(v.number()),   // combat: when NPC was defeated
+    respawnAt: v.optional(v.number()),    // combat: when NPC should respawn
+    lastHitAt: v.optional(v.number()),    // combat: throttle repeated hits
+    aggroTargetProfileId: v.optional(v.id("profiles")), // medium/high aggression target lock
+    aggroUntil: v.optional(v.number()),   // target lock expiration
     lastTick: v.number(),                 // timestamp of last server update
   })
     .index("by_map", ["mapName"])
     .index("by_mapObject", ["mapObjectId"]),
+
+  // ---------------------------------------------------------------------------
+  // AI NPC conversation + memory + action audit
+  // ---------------------------------------------------------------------------
+  npcConversations: defineTable({
+    npcProfileName: v.string(),
+    mapName: v.optional(v.string()),
+    actorProfileId: v.optional(v.id("profiles")),
+    role: v.union(v.literal("system"), v.literal("user"), v.literal("assistant")),
+    content: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_npc", ["npcProfileName"])
+    .index("by_npc_time", ["npcProfileName", "createdAt"])
+    .index("by_actor", ["actorProfileId"]),
+
+  npcMemories: defineTable({
+    npcProfileName: v.string(),
+    summary: v.string(),
+    sourceConversationAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  })
+    .index("by_npc", ["npcProfileName"]),
+
+  npcActionLog: defineTable({
+    npcProfileName: v.string(),
+    intentType: v.string(),
+    accepted: v.boolean(),
+    reason: v.optional(v.string()),
+    sideEffects: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_npc", ["npcProfileName"])
+    .index("by_npc_time", ["npcProfileName", "createdAt"]),
 
   // ---------------------------------------------------------------------------
   // Chat messages
@@ -365,7 +433,7 @@ export default defineSchema({
   }).index("by_name", ["name"]),
 
   questProgress: defineTable({
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     questId: v.id("quests"),
     currentStep: v.number(),
     status: v.union(
@@ -375,8 +443,94 @@ export default defineSchema({
     ),
     choices: v.record(v.string(), v.string()), // step key -> chosen branch
   })
-    .index("by_player", ["playerId"])
-    .index("by_player_quest", ["playerId", "questId"]),
+    .index("by_profile", ["profileId"])
+    .index("by_profile_quest", ["profileId", "questId"]),
+
+  // ---------------------------------------------------------------------------
+  // Quest system v2 (template defs + per-player instances)
+  // ---------------------------------------------------------------------------
+  questDefs: defineTable({
+    key: v.string(),                        // stable template key (e.g. "collect-mushroom-001")
+    title: v.string(),
+    description: v.string(),
+    sourceType: v.union(
+      v.literal("npc"),
+      v.literal("hud"),
+      v.literal("system"),
+    ),
+    offeredByNpcInstanceName: v.optional(v.string()),
+    repeatable: v.boolean(),
+    cooldownMs: v.optional(v.number()),
+    objectives: v.array(v.union(
+      v.object({
+        type: v.literal("collect_item"),
+        itemDefName: v.string(),
+        requiredCount: v.number(),
+      }),
+      v.object({
+        type: v.literal("kill_npc"),
+        targetNpcProfileName: v.string(),
+        requiredCount: v.number(),
+      }),
+    )),
+    rewards: v.object({
+      xp: v.optional(v.number()),
+      gold: v.optional(v.number()),
+      items: v.optional(v.array(v.object({
+        itemDefName: v.string(),
+        quantity: v.number(),
+      }))),
+    }),
+    failure: v.optional(v.object({
+      penaltyType: v.union(
+        v.literal("goldLoss"),
+        v.literal("hpLoss"),
+        v.literal("death"),
+      ),
+      amount: v.optional(v.number()), // required for goldLoss/hpLoss
+      reason: v.optional(v.string()),
+    })),
+    timeLimitMs: v.optional(v.number()),
+    mapScope: v.optional(v.union(v.literal("any"), v.string())),
+    visibilityType: v.optional(v.string()), // "public" | "private" | "system"
+    createdByUser: v.optional(v.id("users")),
+    enabled: v.boolean(),
+    updatedAt: v.number(),
+  })
+    .index("by_key", ["key"])
+    .index("by_sourceType", ["sourceType"])
+    .index("by_offeredByNpc", ["offeredByNpcInstanceName"])
+    .index("by_enabled", ["enabled"]),
+
+  playerQuests: defineTable({
+    profileId: v.id("profiles"),
+    questDefKey: v.string(),
+    status: v.union(
+      v.literal("active"),
+      v.literal("completed"),
+      v.literal("failed"),
+      v.literal("abandoned"),
+    ),
+    acceptedAt: v.number(),
+    deadlineAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+    failedAt: v.optional(v.number()),
+    rewardClaimedAt: v.optional(v.number()),
+    failureAppliedAt: v.optional(v.number()),
+    source: v.object({
+      type: v.union(v.literal("npc"), v.literal("hud")),
+      npcInstanceName: v.optional(v.string()),
+    }),
+    progress: v.array(v.object({
+      type: v.union(v.literal("collect_item"), v.literal("kill_npc")),
+      targetKey: v.string(),
+      currentCount: v.number(),
+      requiredCount: v.number(),
+    })),
+  })
+    .index("by_profile", ["profileId"])
+    .index("by_profile_status", ["profileId", "status"])
+    .index("by_status_deadline", ["status", "deadlineAt"]),
 
   dialogueTrees: defineTable({
     npcId: v.optional(v.id("npcs")),
@@ -410,7 +564,7 @@ export default defineSchema({
       v.literal("item")
     ),
     discoverable: v.boolean(),
-    discoveredBy: v.array(v.id("players")),
+    discoveredBy: v.array(v.id("profiles")),
     draft: v.optional(v.boolean()),
   }).index("by_key", ["key"]),
 
@@ -486,6 +640,7 @@ export default defineSchema({
     isUnique: v.optional(v.boolean()),      // true = only one can exist in the game
     tags: v.optional(v.array(v.string())),  // freeform tags (e.g. "fire", "cursed", "two-handed")
     lore: v.optional(v.string()),           // extended lore text
+    consumeHpDelta: v.optional(v.number()), // consumables: +heals, -poisons on click/use
     pickupSoundUrl: v.optional(v.string()), // one-shot SFX played when picked up
     createdBy: v.optional(v.id("profiles")),
     visibilityType: v.optional(v.string()), // "public" | "private" | "system" (legacy undefined => system)
@@ -515,13 +670,14 @@ export default defineSchema({
     .index("by_map", ["mapName"]),
 
   inventories: defineTable({
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     slots: v.array(v.object({
       itemDefName: v.string(),
       quantity: v.number(),
       metadata: v.optional(v.record(v.string(), v.string())),
     })),
-  }).index("by_player", ["playerId"]),
+  })
+    .index("by_profile", ["profileId"]),
 
   combatEncounters: defineTable({
     enemies: v.array(v.object({
@@ -546,7 +702,7 @@ export default defineSchema({
 
   combatLog: defineTable({
     encounterId: v.id("combatEncounters"),
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     turns: v.array(v.object({
       actor: v.string(),         // "player" or NPC name
       action: v.string(),        // "attack" | "defend" | "skill" | "item" | "flee"
@@ -560,12 +716,14 @@ export default defineSchema({
       v.literal("flee")
     ),
     timestamp: v.number(),
-  }).index("by_player", ["playerId"]),
+  })
+    .index("by_profile", ["profileId"]),
 
   wallets: defineTable({
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     currencies: v.record(v.string(), v.number()), // currency-name -> amount
-  }).index("by_player", ["playerId"]),
+  })
+    .index("by_profile", ["profileId"]),
 
   shops: defineTable({
     npcId: v.id("npcs"),

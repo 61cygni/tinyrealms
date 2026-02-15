@@ -132,6 +132,7 @@ export const save = mutation({
     isUnique: v.optional(v.boolean()),
     tags: v.optional(v.array(v.string())),
     lore: v.optional(v.string()),
+    consumeHpDelta: v.optional(v.number()),
     pickupSoundUrl: v.optional(v.string()),
     visibilityType: v.optional(visibilityTypeValidator),
   },

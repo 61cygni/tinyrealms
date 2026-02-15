@@ -46,14 +46,14 @@ export const create = mutation({
 export const discover = mutation({
   args: {
     loreId: v.id("lore"),
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
   },
-  handler: async (ctx, { loreId, playerId }) => {
+  handler: async (ctx, { loreId, profileId }) => {
     const entry = await ctx.db.get(loreId);
     if (!entry) return;
-    if (!entry.discoveredBy.includes(playerId)) {
+    if (!entry.discoveredBy.includes(profileId)) {
       await ctx.db.patch(loreId, {
-        discoveredBy: [...entry.discoveredBy, playerId],
+        discoveredBy: [...entry.discoveredBy, profileId],
       });
     }
   },

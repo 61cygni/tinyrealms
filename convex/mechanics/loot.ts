@@ -14,9 +14,9 @@ export interface LootTableEntry {
 export const resolveLoot = mutation({
   args: {
     encounterId: v.id("combatEncounters"),
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
   },
-  handler: async (ctx, { encounterId, playerId }) => {
+  handler: async (ctx, { encounterId, profileId }) => {
     const encounter = await ctx.db.get(encounterId);
     if (!encounter) throw new Error("Encounter not found");
 
@@ -45,12 +45,12 @@ export const resolveLoot = mutation({
     for (const drop of drops) {
       let inv = await ctx.db
         .query("inventories")
-        .withIndex("by_player", (q) => q.eq("playerId", playerId))
+        .withIndex("by_profile", (q) => q.eq("profileId", profileId))
         .first();
 
       if (!inv) {
         await ctx.db.insert("inventories", {
-          playerId,
+          profileId,
           slots: [{ itemDefName: drop.itemDefName, quantity: drop.quantity, metadata: {} }],
         });
       } else {
@@ -76,12 +76,12 @@ export const resolveLoot = mutation({
       for (const [currency, amount] of Object.entries(rewards.currency)) {
         let wallet = await ctx.db
           .query("wallets")
-          .withIndex("by_player", (q) => q.eq("playerId", playerId))
+          .withIndex("by_profile", (q) => q.eq("profileId", profileId))
           .first();
 
         if (!wallet) {
           await ctx.db.insert("wallets", {
-            playerId,
+            profileId,
             currencies: { [currency]: amount as number },
           });
         } else {

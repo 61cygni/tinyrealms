@@ -1,33 +1,40 @@
 import { v } from "convex/values";
 import { mutation, query } from "../_generated/server";
+import { internal } from "../_generated/api";
 
 export const getByPlayer = query({
-  args: { playerId: v.id("players") },
-  handler: async (ctx, { playerId }) => {
+  args: { profileId: v.id("profiles") },
+  handler: async (ctx, { profileId }) => {
     return await ctx.db
       .query("inventories")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
   },
 });
 
 export const addItem = mutation({
   args: {
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     itemDefName: v.string(),
     quantity: v.number(),
   },
-  handler: async (ctx, { playerId, itemDefName, quantity }) => {
+  handler: async (ctx, { profileId, itemDefName, quantity }) => {
     let inv = await ctx.db
       .query("inventories")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
 
     if (!inv) {
-      return await ctx.db.insert("inventories", {
-        playerId,
+      const id = await ctx.db.insert("inventories", {
+        profileId,
         slots: [{ itemDefName, quantity, metadata: {} }],
       });
+      await ctx.runMutation(internal.quests.recordItemProgress, {
+        profileId,
+        itemDefName,
+        quantity,
+      });
+      return id;
     }
 
     const slots = [...(inv.slots as any[])];
@@ -49,20 +56,25 @@ export const addItem = mutation({
     }
 
     await ctx.db.patch(inv._id, { slots });
+    await ctx.runMutation(internal.quests.recordItemProgress, {
+      profileId,
+      itemDefName,
+      quantity,
+    });
     return inv._id;
   },
 });
 
 export const removeItem = mutation({
   args: {
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     itemDefName: v.string(),
     quantity: v.number(),
   },
-  handler: async (ctx, { playerId, itemDefName, quantity }) => {
+  handler: async (ctx, { profileId, itemDefName, quantity }) => {
     const inv = await ctx.db
       .query("inventories")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
 
     if (!inv) throw new Error("No inventory");

@@ -5,9 +5,15 @@ import {
   Text,
   TextStyle,
   Graphics,
+  ColorMatrixFilter,
 } from "pixi.js";
 import { loadSpriteSheet } from "./SpriteLoader.ts";
 import type { Direction } from "./types.ts";
+import {
+  HIT_SHAKE_DURATION_MS,
+  HIT_SHAKE_MAGNITUDE_PX,
+  HIT_FLASH_DURATION_MS,
+} from "../config/combat-config.ts";
 
 const ANIM_SPEED = 0.08;
 
@@ -27,6 +33,8 @@ export interface NPCConfig {
   id: string;
   /** Display name */
   name: string;
+  /** Stable NPC profile instance identifier (optional) */
+  instanceName?: string;
   /** Sprite sheet JSON path (under /assets/sprites/) */
   spriteSheet: string;
   /** Starting position in world pixels */
@@ -67,6 +75,7 @@ export interface DialogueLine {
 export class NPC {
   readonly id: string;
   readonly name: string;
+  instanceName?: string;
   readonly container: Container;
   readonly dialogue: DialogueLine[];
   interactSoundUrl?: string;
@@ -76,6 +85,8 @@ export class NPC {
 
   x: number;
   y: number;
+  currentHp?: number;
+  maxHp?: number;
   direction: Direction = "down";
 
   private spawnX: number;
@@ -112,8 +123,11 @@ export class NPC {
   constructor(config: NPCConfig) {
     this.id = config.id;
     this.name = config.name;
+    this.instanceName = config.instanceName;
     this.x = config.x;
     this.y = config.y;
+    this.currentHp = undefined;
+    this.maxHp = undefined;
     this.spawnX = config.x;
     this.spawnY = config.y;
     this.speed = config.speed ?? 40;
@@ -348,12 +362,25 @@ export class NPC {
 
   /** Show/hide the "[E] Talk" prompt */
   setPromptVisible(visible: boolean) {
+    this.setPrompt(this.promptLabel.text, visible);
+  }
+
+  /** Set prompt text + visibility in one call */
+  setPrompt(text: string, visible: boolean) {
+    if (this.promptLabel.text !== text) {
+      this.promptLabel.text = text;
+    }
     if (this._showPrompt === visible) return;
     this._showPrompt = visible;
     this.promptLabel.visible = visible;
 
     // Face the player when they're close
     // (We'll handle this from EntityLayer with the player's relative position)
+  }
+
+  setCombatHp(currentHp?: number, maxHp?: number) {
+    this.currentHp = currentHp;
+    this.maxHp = maxHp;
   }
 
   /** Turn to face a point (the player) */
@@ -371,6 +398,49 @@ export class NPC {
       this.stateTimer = 3;
       this.stopWalkAnim();
     }
+  }
+
+  /**
+   * Quick shake + red flash when this NPC is hit.
+   */
+  playHitEffect() {
+    const target = this.sprite ?? this.fallback;
+    if (!target) return;
+
+    // --- Red tint via ColorMatrixFilter ---
+    const redFilter = new ColorMatrixFilter();
+    // Shift hue and saturate to produce a strong red overlay
+    redFilter.matrix = [
+      1.6, 0.4, 0.1, 0, 0,
+      0.1, 0.3, 0.1, 0, 0,
+      0.1, 0.1, 0.3, 0, 0,
+      0,   0,   0,   1, 0,
+    ];
+    target.filters = [redFilter];
+    setTimeout(() => {
+      if (target.filters) {
+        target.filters = [];
+      }
+    }, HIT_FLASH_DURATION_MS);
+
+    // --- Shake ---
+    const origX = target.x;
+    const origY = target.y;
+    const start = performance.now();
+    const shake = () => {
+      const elapsed = performance.now() - start;
+      if (elapsed >= HIT_SHAKE_DURATION_MS) {
+        target.x = origX;
+        target.y = origY;
+        return;
+      }
+      const progress = elapsed / HIT_SHAKE_DURATION_MS;
+      const mag = HIT_SHAKE_MAGNITUDE_PX * (1 - progress);
+      target.x = origX + (Math.random() * 2 - 1) * mag;
+      target.y = origY + (Math.random() * 2 - 1) * mag;
+      requestAnimationFrame(shake);
+    };
+    requestAnimationFrame(shake);
   }
 
   destroy() {

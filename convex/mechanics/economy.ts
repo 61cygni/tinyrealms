@@ -2,30 +2,30 @@ import { v } from "convex/values";
 import { mutation, query } from "../_generated/server";
 
 export const getWallet = query({
-  args: { playerId: v.id("players") },
-  handler: async (ctx, { playerId }) => {
+  args: { profileId: v.id("profiles") },
+  handler: async (ctx, { profileId }) => {
     return await ctx.db
       .query("wallets")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
   },
 });
 
 export const addCurrency = mutation({
   args: {
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     currency: v.string(),
     amount: v.number(),
   },
-  handler: async (ctx, { playerId, currency, amount }) => {
+  handler: async (ctx, { profileId, currency, amount }) => {
     let wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
 
     if (!wallet) {
       return await ctx.db.insert("wallets", {
-        playerId,
+        profileId,
         currencies: { [currency]: amount },
       });
     }
@@ -39,14 +39,14 @@ export const addCurrency = mutation({
 
 export const spendCurrency = mutation({
   args: {
-    playerId: v.id("players"),
+    profileId: v.id("profiles"),
     currency: v.string(),
     amount: v.number(),
   },
-  handler: async (ctx, { playerId, currency, amount }) => {
+  handler: async (ctx, { profileId, currency, amount }) => {
     const wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_player", (q) => q.eq("playerId", playerId))
+      .withIndex("by_profile", (q) => q.eq("profileId", profileId))
       .first();
 
     if (!wallet) throw new Error("No wallet");

@@ -5,6 +5,22 @@
 import type { Game } from "../engine/Game.ts";
 import { getConvexClient } from "../lib/convexClient.ts";
 import { api } from "../../convex/_generated/api";
+import { TILESHEET_CONFIGS } from "../config/tilesheet-config.ts";
+import { MUSIC_OPTIONS } from "../config/music-config.ts";
+import {
+  COMBAT_ATTACK_RANGE_MAX_PX,
+  COMBAT_ATTACK_RANGE_MIN_PX,
+  COMBAT_ATTACK_RANGE_PX,
+  COMBAT_DAMAGE_VARIANCE_MAX_PCT,
+  COMBAT_DAMAGE_VARIANCE_MIN_PCT,
+  COMBAT_DAMAGE_VARIANCE_PCT,
+  COMBAT_NPC_HIT_COOLDOWN_MAX_MS,
+  COMBAT_NPC_HIT_COOLDOWN_MIN_MS,
+  COMBAT_NPC_HIT_COOLDOWN_MS,
+  COMBAT_PLAYER_ATTACK_COOLDOWN_MAX_MS,
+  COMBAT_PLAYER_ATTACK_COOLDOWN_MIN_MS,
+  COMBAT_PLAYER_ATTACK_COOLDOWN_MS,
+} from "../config/combat-config.ts";
 import "./MapEditor.css";
 import "./TilesetPicker.css";
 import "./LayerPanel.css";
@@ -42,18 +58,8 @@ export interface TilesetInfo {
   imageHeight: number;
 }
 
-const TILESETS: TilesetInfo[] = [
-  { name: "Fantasy Interior", url: "/assets/tilesets/fantasy-interior.png", tileWidth: 24, tileHeight: 24, imageWidth: 768, imageHeight: 7056 },
-  { name: "Fantasy Exterior", url: "/assets/tilesets/fantasy-exterior.png", tileWidth: 24, tileHeight: 24, imageWidth: 768, imageHeight: 7056 },
-  { name: "Gentle",           url: "/assets/tilesets/gentle.png",           tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 2040 },
-  { name: "Gentle Objects",   url: "/assets/tilesets/gentle-obj.png",       tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 2040 },
-  { name: "Forest",           url: "/assets/tilesets/forest.png",           tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 384 },
-  { name: "Mage City",        url: "/assets/tilesets/magecity.png",         tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 384 },
-  { name: "Mage Objects",     url: "/assets/tilesets/mage-obj.png",         tileWidth: 24, tileHeight: 24, imageWidth: 384, imageHeight: 1536 },
-  { name: "Overworld Palma",  url: "/assets/tilesets/overworld_palma.png",  tileWidth: 16, tileHeight: 16, imageWidth: 512, imageHeight: 512 },
-  { name: "PS1 Camineet",    url: "/assets/tilesets/ps1-camineet.png",    tileWidth: 16, tileHeight: 16, imageWidth: 832, imageHeight: 640 },
-  { name: "Mage City",       url: "/assets/tilesets/mage-city.png",       tileWidth: 32, tileHeight: 32, imageWidth: 256, imageHeight: 1408 },
-];
+const TILESETS: TilesetInfo[] = TILESHEET_CONFIGS;
+const MAP_DEFAULT_TILESET_VALUE = "__map_default__";
 
 const DISPLAY_TILE_SIZE = 32;
 
@@ -78,6 +84,7 @@ interface SpriteDef {
   visibilityType?: "public" | "private" | "system";
   spriteSheetUrl: string;
   defaultAnimation: string;
+  animationSpeed: number;
   frameWidth: number;
   frameHeight: number;
   scale: number;
@@ -169,6 +176,7 @@ export class MapEditorPanel {
   private toolButtons: HTMLButtonElement[] = [];
   private deleteBtn!: HTMLButtonElement;
   private layerButtons: HTMLButtonElement[] = [];
+  private layerListEl!: HTMLElement;
   private tilesetSelect!: HTMLSelectElement;
   private tileCanvas!: HTMLCanvasElement;
   private tileCtx!: CanvasRenderingContext2D;
@@ -183,6 +191,10 @@ export class MapEditorPanel {
   private mapNameInput!: HTMLInputElement;
   private mapMusicSelect!: HTMLSelectElement;
   private mapCombatCheck!: HTMLInputElement;
+  private mapCombatRangeInput!: HTMLInputElement;
+  private mapCombatCooldownInput!: HTMLInputElement;
+  private mapCombatNpcHitCooldownInput!: HTMLInputElement;
+  private mapCombatVarianceInput!: HTMLInputElement;
   private mapStatusSelect!: HTMLSelectElement;
   private portalPickerEl!: HTMLElement;
   private portalListEl!: HTMLElement;
@@ -389,17 +401,143 @@ export class MapEditorPanel {
     label.textContent = "Layers";
     panel.appendChild(label);
 
-    const layerNames = ["bg0", "bg1", "obj0", "obj1", "overlay0"];
-    layerNames.forEach((name, i) => {
-      const btn = document.createElement("button");
-      btn.className = `layer-btn ${this.activeLayer === i ? "active" : ""}`;
-      btn.textContent = name;
-      btn.addEventListener("click", () => this.setLayer(i));
-      panel.appendChild(btn);
-      this.layerButtons.push(btn);
-    });
+    this.layerListEl = document.createElement("div");
+    this.layerListEl.className = "layer-list";
+    panel.appendChild(this.layerListEl);
+
+    const controls = document.createElement("div");
+    controls.className = "layer-controls";
+
+    const addBgBtn = document.createElement("button");
+    addBgBtn.className = "layer-ctrl-btn";
+    addBgBtn.textContent = "+BG";
+    addBgBtn.title = "Add background layer";
+    addBgBtn.addEventListener("click", () => this.addLayer("bg"));
+
+    const addObjBtn = document.createElement("button");
+    addObjBtn.className = "layer-ctrl-btn";
+    addObjBtn.textContent = "+OBJ";
+    addObjBtn.title = "Add object layer";
+    addObjBtn.addEventListener("click", () => this.addLayer("obj"));
+
+    const addOverlayBtn = document.createElement("button");
+    addOverlayBtn.className = "layer-ctrl-btn";
+    addOverlayBtn.textContent = "+OVR";
+    addOverlayBtn.title = "Add overlay layer";
+    addOverlayBtn.addEventListener("click", () => this.addLayer("overlay"));
+
+    controls.append(addBgBtn, addObjBtn, addOverlayBtn);
+    panel.appendChild(controls);
+
+    const orderControls = document.createElement("div");
+    orderControls.className = "layer-controls";
+
+    const upBtn = document.createElement("button");
+    upBtn.className = "layer-ctrl-btn";
+    upBtn.textContent = "↑";
+    upBtn.title = "Move active layer up";
+    upBtn.addEventListener("click", () => this.moveActiveLayer(-1));
+
+    const downBtn = document.createElement("button");
+    downBtn.className = "layer-ctrl-btn";
+    downBtn.textContent = "↓";
+    downBtn.title = "Move active layer down";
+    downBtn.addEventListener("click", () => this.moveActiveLayer(1));
+
+    const delBtn = document.createElement("button");
+    delBtn.className = "layer-ctrl-btn";
+    delBtn.textContent = "Del";
+    delBtn.title = "Delete active layer";
+    delBtn.addEventListener("click", () => this.removeActiveLayer());
+
+    orderControls.append(upBtn, downBtn, delBtn);
+    panel.appendChild(orderControls);
+
+    this.renderLayerButtons();
 
     return panel;
+  }
+
+  private getLayerButtonText(layerIndex: number, fallbackName?: string): string {
+    const mapData = this.game?.mapRenderer.getMapData();
+    const layer = mapData?.layers[layerIndex];
+    const layerName = layer?.name ?? fallbackName ?? `layer${layerIndex}`;
+    const layerTilesetUrl = layer?.tilesetUrl ?? mapData?.tilesetUrl;
+    if (!layerTilesetUrl) return layerName;
+    const ts = TILESETS.find((t) => t.url === layerTilesetUrl);
+    const tsName = ts?.name ?? layerTilesetUrl.split("/").pop()?.replace(/\.[^.]+$/, "") ?? "tileset";
+    return `${layerName} · ${tsName}`;
+  }
+
+  private refreshLayerButtonLabels() {
+    this.renderLayerButtons();
+  }
+
+  private renderLayerButtons() {
+    if (!this.layerListEl) return;
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData) return;
+
+    this.layerListEl.innerHTML = "";
+    this.layerButtons = [];
+    mapData.layers.forEach((layer, i) => {
+      const btn = document.createElement("button");
+      btn.className = `layer-btn ${this.activeLayer === i ? "active" : ""}`;
+      btn.textContent = this.getLayerButtonText(i, layer.name);
+      btn.title = btn.textContent;
+      btn.addEventListener("click", () => this.setLayer(i));
+      this.layerListEl.appendChild(btn);
+      this.layerButtons.push(btn);
+    });
+  }
+
+  private makeLayerName(type: "bg" | "obj" | "overlay", layers: { name: string; type: "bg" | "obj" | "overlay" }[]): string {
+    const count = layers.filter((l) => l.type === type).length;
+    return `${type}${count}`;
+  }
+
+  private addLayer(type: "bg" | "obj" | "overlay") {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData || !this.game) return;
+    const layerName = this.makeLayerName(type, mapData.layers);
+    mapData.layers.push({
+      name: layerName,
+      type,
+      tiles: new Array(mapData.width * mapData.height).fill(-1),
+      visible: true,
+    });
+    this.activeLayer = mapData.layers.length - 1;
+    this.game.mapRenderer.loadMap(mapData);
+    this.syncTilesetToMapLayer();
+    this.showSaveStatus(`Added layer "${layerName}"`, false);
+  }
+
+  private removeActiveLayer() {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData || !this.game) return;
+    if (mapData.layers.length <= 1) {
+      this.showSaveStatus("Map must have at least one layer", true);
+      return;
+    }
+    const removed = mapData.layers.splice(this.activeLayer, 1)[0];
+    this.activeLayer = Math.max(0, Math.min(this.activeLayer, mapData.layers.length - 1));
+    this.game.mapRenderer.loadMap(mapData);
+    this.syncTilesetToMapLayer();
+    this.showSaveStatus(`Removed layer "${removed.name}"`, false);
+  }
+
+  private moveActiveLayer(delta: -1 | 1) {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData || !this.game) return;
+    const from = this.activeLayer;
+    const to = from + delta;
+    if (to < 0 || to >= mapData.layers.length) return;
+    const [moved] = mapData.layers.splice(from, 1);
+    mapData.layers.splice(to, 0, moved);
+    this.activeLayer = to;
+    this.game.mapRenderer.loadMap(mapData);
+    this.syncTilesetToMapLayer();
+    this.showSaveStatus(`Moved layer "${moved.name}"`, false);
   }
 
   // =========================================================================
@@ -426,6 +564,10 @@ export class MapEditorPanel {
 
     this.tilesetSelect = document.createElement("select");
     this.tilesetSelect.className = "tileset-select";
+    const mapDefaultOpt = document.createElement("option");
+    mapDefaultOpt.value = MAP_DEFAULT_TILESET_VALUE;
+    mapDefaultOpt.textContent = "(Map default)";
+    this.tilesetSelect.appendChild(mapDefaultOpt);
     for (const ts of TILESETS) {
       const opt = document.createElement("option");
       opt.value = ts.url;
@@ -433,13 +575,19 @@ export class MapEditorPanel {
       this.tilesetSelect.appendChild(opt);
     }
     this.tilesetSelect.addEventListener("change", () => {
-      const ts = TILESETS.find((t) => t.url === this.tilesetSelect.value);
-      if (ts) {
-        this.activeTileset = ts;
+      const selectedValue = this.tilesetSelect.value;
+      if (selectedValue === MAP_DEFAULT_TILESET_VALUE) {
+        this.applyTilesetToActiveLayer(null);
+        const layerTs = this.getTilesetForActiveLayer();
+        this.activeTileset = layerTs;
         this.selectedTile = 0;
         this.selectedRegion = { col: 0, row: 0, w: 1, h: 1 };
-        // Load image first (auto-detects real dimensions), then sync map tile size
-        this.loadTilesetImage(() => this.syncMapTileSizeToTileset(ts));
+        this.loadTilesetImage();
+        return;
+      }
+      const ts = TILESETS.find((t) => t.url === selectedValue);
+      if (ts) {
+        this.applyTilesetToActiveLayer(ts);
       }
     });
     header.appendChild(this.tilesetSelect);
@@ -1071,31 +1219,50 @@ export class MapEditorPanel {
     }));
   }
 
-  /** Sync map tile size to the tileset's native tile size, re-render if changed */
-  private syncMapTileSizeToTileset(ts: TilesetInfo) {
+  private getMapDefaultTileset(): TilesetInfo {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData) return TILESETS[0];
+    return TILESETS.find((t) => t.url === mapData.tilesetUrl) ?? TILESETS[0];
+  }
+
+  private getTilesetForActiveLayer(): TilesetInfo {
+    const mapData = this.game?.mapRenderer.getMapData();
+    if (!mapData) return TILESETS[0];
+    const layer = mapData.layers[this.activeLayer];
+    const resolvedUrl = layer?.tilesetUrl ?? mapData.tilesetUrl;
+    return TILESETS.find((t) => t.url === resolvedUrl) ?? this.getMapDefaultTileset();
+  }
+
+  /** Assign a tileset to the active layer (null => map default) and re-render. */
+  private applyTilesetToActiveLayer(ts: TilesetInfo | null) {
     const mapData = this.game?.mapRenderer.getMapData();
     if (!mapData) return;
+    const layer = mapData.layers[this.activeLayer];
+    if (!layer) return;
 
-    if (mapData.tileWidth !== ts.tileWidth || mapData.tileHeight !== ts.tileHeight) {
-      console.log(
-        `Tileset tile size ${ts.tileWidth}×${ts.tileHeight} differs from map ${mapData.tileWidth}×${mapData.tileHeight} — updating map`,
-      );
-      mapData.tileWidth = ts.tileWidth;
-      mapData.tileHeight = ts.tileHeight;
-      mapData.tilesetPxW = ts.imageWidth;
-      mapData.tilesetPxH = ts.imageHeight;
-      mapData.tilesetUrl = ts.url;
-      // Reload to re-render at the correct tile size
-      this.game!.mapRenderer.loadMap(mapData);
+    if (ts) {
+      if (mapData.tileWidth !== ts.tileWidth || mapData.tileHeight !== ts.tileHeight) {
+        this.showSaveStatus(
+          `Tileset tile size must be ${mapData.tileWidth}×${mapData.tileHeight} for this map`,
+          true,
+        );
+        this.syncTilesetToMapLayer();
+        return;
+      }
+      layer.tilesetUrl = ts.url;
+      this.activeTileset = ts;
     } else {
-      // Same tile size — just update the URL and image dimensions
-      mapData.tilesetUrl = ts.url;
-      mapData.tilesetPxW = ts.imageWidth;
-      mapData.tilesetPxH = ts.imageHeight;
-      this.game!.mapRenderer.loadMap(mapData);
+      delete layer.tilesetUrl;
+      this.activeTileset = this.getMapDefaultTileset();
     }
+
+    this.selectedTile = 0;
+    this.selectedRegion = { col: 0, row: 0, w: 1, h: 1 };
+    this.game!.mapRenderer.loadMap(mapData);
+    this.loadTilesetImage();
     this.updateTileSizeLabel();
     this.updateMapDimsLabel();
+    this.refreshLayerButtonLabels();
   }
 
   private updateTileSizeLabel() {
@@ -1205,6 +1372,7 @@ export class MapEditorPanel {
     this.layerButtons.forEach((btn, i) => {
       btn.classList.toggle("active", i === index);
     });
+    this.syncTilesetToMapLayer();
 
     // Update layer highlight if a tile tool is active
     const isTileTool = this.tool === "paint" || this.tool === "erase";
@@ -1222,6 +1390,7 @@ export class MapEditorPanel {
         name: this.selectedSpriteDef.name,
         spriteSheetUrl: this.selectedSpriteDef.spriteSheetUrl,
         defaultAnimation: this.selectedSpriteDef.defaultAnimation,
+        animationSpeed: this.selectedSpriteDef.animationSpeed,
         scale: this.selectedSpriteDef.scale,
         frameWidth: this.selectedSpriteDef.frameWidth,
         frameHeight: this.selectedSpriteDef.frameHeight,
@@ -1244,23 +1413,35 @@ export class MapEditorPanel {
     this.game = game;
     this.bindCanvasEvents(game);
     // Auto-select the tileset matching the current map
-    this.syncTilesetToMap();
+    this.syncTilesetToMapLayer();
     this.updateMapDimsLabel();
+    this.refreshLayerButtonLabels();
   }
 
-  /** Match the editor's tileset dropdown to the map's current tilesetUrl */
-  private syncTilesetToMap() {
+  /** Match the editor's tileset dropdown to the active layer's tileset. */
+  private syncTilesetToMapLayer() {
     const mapData = this.game?.mapRenderer.getMapData();
     if (!mapData) return;
-    const match = TILESETS.find((t) => t.url === mapData.tilesetUrl);
-    if (match) {
-      this.activeTileset = match;
-      this.tilesetSelect.value = match.url;
-      this.selectedTile = 0;
-      this.selectedRegion = { col: 0, row: 0, w: 1, h: 1 };
-      this.loadTilesetImage();
-      this.updateTileSizeLabel();
+    if (mapData.layers.length === 0) return;
+    if (this.activeLayer < 0 || this.activeLayer >= mapData.layers.length) {
+      this.activeLayer = Math.max(0, Math.min(this.activeLayer, mapData.layers.length - 1));
     }
+    const layer = mapData.layers[this.activeLayer];
+    const selectedValue = layer?.tilesetUrl ?? MAP_DEFAULT_TILESET_VALUE;
+    this.tilesetSelect.value = selectedValue;
+    this.activeTileset = this.getTilesetForActiveLayer();
+    this.selectedTile = 0;
+    this.selectedRegion = { col: 0, row: 0, w: 1, h: 1 };
+    this.loadTilesetImage();
+    this.updateTileSizeLabel();
+    this.refreshLayerButtonLabels();
+  }
+
+  /** Called by GameShell when the active map changes. */
+  onMapChanged() {
+    this.activeLayer = 0;
+    this.syncTilesetToMapLayer();
+    this.updateMapDimsLabel();
   }
 
   private bindCanvasEvents(game: Game) {
@@ -1306,9 +1487,9 @@ export class MapEditorPanel {
               const tsCols = Math.floor(ts.imageWidth / ts.tileWidth);
               if (this.isIrregularSelection && this.irregularTiles.size > 0) {
                 const tiles = this.getIrregularSelectionTiles();
-                game.mapRenderer.showIrregularTileGhost(tx, ty, tiles, tsCols);
+                game.mapRenderer.showIrregularTileGhost(tx, ty, tiles, tsCols, ts.url);
               } else {
-                game.mapRenderer.showTileGhost(tx, ty, this.selectedRegion, tsCols);
+                game.mapRenderer.showTileGhost(tx, ty, this.selectedRegion, tsCols, ts.url);
               }
             } else {
               game.mapRenderer.showTileGhost(tx, ty, null, 0);
@@ -1417,6 +1598,7 @@ export class MapEditorPanel {
   private paintTileAt(worldX: number, worldY: number, game: Game) {
     const mapData = game.mapRenderer.getMapData();
     if (!mapData) return;
+    if (this.activeLayer < 0 || this.activeLayer >= mapData.layers.length) return;
 
     const tileX = Math.floor(worldX / mapData.tileWidth);
     const tileY = Math.floor(worldY / mapData.tileHeight);
@@ -1492,13 +1674,18 @@ export class MapEditorPanel {
   private removeObjectAt(worldX: number, worldY: number) {
     // Objects are anchored at bottom-center (0.5, 1.0), so the stored Y is
     // the sprite's feet.  When the user clicks on the sprite's body they'll
-    // click above the anchor.  We use an asymmetric hit-test: generous upward
-    // (spriteHeight), tighter horizontal (half-width) and a small margin below.
-    const hitAbove = 96;   // how far above anchor counts as a hit
-    const hitBelow = 16;   // small margin below anchor
-    const hitSide  = 48;   // horizontal half-width
+    // click above the anchor.  We use an asymmetric hit-test based on the
+    // actual sprite dimensions: full height upward, half-width horizontal,
+    // and a small margin below.
+    const defByName = new Map(this.spriteDefs.map(d => [d.name, d]));
 
-    const hitTest = (objX: number, objY: number): boolean => {
+    const hitTest = (objX: number, objY: number, spriteDefName: string): boolean => {
+      const def = defByName.get(spriteDefName);
+      // Large fallback keeps erase usable even if a definition is missing
+      // from the local cache.
+      const hitAbove = def ? def.frameHeight * def.scale : 384;
+      const hitSide  = def ? (def.frameWidth * def.scale) / 2 : 192;
+      const hitBelow = 16;
       const dx = Math.abs(objX - worldX);
       const dy = objY - worldY; // positive = click is above anchor
       return dx <= hitSide && dy >= -hitBelow && dy <= hitAbove;
@@ -1509,51 +1696,45 @@ export class MapEditorPanel {
       return Math.abs(objX - worldX) + Math.abs(objY - worldY);
     };
 
-    // First check server-driven NPCs (they may have wandered from spawn)
-    if (this.game?.entityLayer) {
-      const npcHit = this.game.entityLayer.findNearestNPCAt(worldX, worldY, hitAbove);
-      if (npcHit) {
-        let bestPlacedIdx = -1;
-        let bestPlacedScore = Infinity;
-        for (let i = 0; i < this.placedObjects.length; i++) {
-          const obj = this.placedObjects[i];
-          if (hitTest(obj.x, obj.y)) {
-            const s = hitScore(obj.x, obj.y);
-            if (s < bestPlacedScore) {
-              bestPlacedScore = s;
-              bestPlacedIdx = i;
-            }
-          }
-        }
-        if (bestPlacedIdx >= 0) {
-          this.placedObjects.splice(bestPlacedIdx, 1);
-        }
-        this.game.entityLayer.removeNPC(npcHit.id);
-        this.tileInfoEl.textContent = `Removed NPC (${this.placedObjects.length} total)`;
-        return;
-      }
-    }
+    const isNpcDef = (spriteDefName: string): boolean => {
+      const def = defByName.get(spriteDefName);
+      return def?.category === "npc";
+    };
 
-    // Then check static placed objects by stored position
+    const mode: "object" | "npc" = this.tool === "npc-erase" ? "npc" : "object";
+
+    // In object-erase mode, ONLY remove non-NPC objects.
+    // In npc-erase mode, ONLY remove NPC objects.
     let bestIdx = -1;
     let bestScore = Infinity;
-
     for (let i = 0; i < this.placedObjects.length; i++) {
       const obj = this.placedObjects[i];
-      if (hitTest(obj.x, obj.y)) {
-        const s = hitScore(obj.x, obj.y);
-        if (s < bestScore) {
-          bestScore = s;
-          bestIdx = i;
-        }
+      const isNpc = isNpcDef(obj.spriteDefName);
+      if (mode === "object" && isNpc) continue;
+      if (mode === "npc" && !isNpc) continue;
+      if (!hitTest(obj.x, obj.y, obj.spriteDefName)) continue;
+
+      const s = hitScore(obj.x, obj.y);
+      if (s < bestScore) {
+        bestScore = s;
+        bestIdx = i;
       }
     }
 
-    if (bestIdx >= 0) {
-      const removed = this.placedObjects.splice(bestIdx, 1)[0];
-      this.game?.objectLayer?.removePlacedObject(removed.id);
-      this.tileInfoEl.textContent = `Removed object (${this.placedObjects.length} total)`;
+    if (bestIdx < 0) return;
+
+    const removed = this.placedObjects.splice(bestIdx, 1)[0];
+    this.game?.objectLayer?.removePlacedObject(removed.id);
+
+    if (mode === "npc" && this.game?.entityLayer) {
+      // Also remove the nearest runtime NPC around the clicked area.
+      const npcHit = this.game.entityLayer.findNearestNPCAt(worldX, worldY, 320);
+      if (npcHit) this.game.entityLayer.removeNPC(npcHit.id);
+      this.tileInfoEl.textContent = `Removed NPC (${this.placedObjects.length} total)`;
+      return;
     }
+
+    this.tileInfoEl.textContent = `Removed object (${this.placedObjects.length} total)`;
   }
 
   // =========================================================================
@@ -1603,18 +1784,6 @@ export class MapEditorPanel {
     musicLabel.style.minWidth = "80px";
     const musicSelect = document.createElement("select");
     musicSelect.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
-    const MUSIC_OPTIONS = [
-      { label: "(None)", url: "" },
-      { label: "Cozy Cottage", url: "/assets/audio/cozy.m4a" },
-      { label: "PS1 Town", url: "/assets/audio/ps1-town.mp3" },
-      { label: "PS1 Shop", url: "/assets/audio/ps1-shop.mp3" },
-      { label: "PS1 Palma", url: "/assets/audio/ps1-palma.mp3" },
-      { label: "Battle", url: "/assets/audio/battle.mp3" },
-      { label: "Vinyl", url: "/assets/audio/vinyl.mp3" },
-      { label: "Rain", url: "/assets/audio/rain.mp3" },
-      { label: "Title", url: "/assets/audio/title.mp3" },
-      { label: "Mage City", url: "/assets/audio/magecity.mp3" },
-    ];
     for (const m of MUSIC_OPTIONS) {
       const opt = document.createElement("option");
       opt.value = m.url;
@@ -1643,6 +1812,110 @@ export class MapEditorPanel {
     this.mapCombatCheck = combatCheck;
     combatRow.append(combatLabel, combatCheck);
     form.appendChild(combatRow);
+
+    const combatRangeRow = document.createElement("div");
+    combatRangeRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const combatRangeLabel = document.createElement("span");
+    combatRangeLabel.textContent = "Attack Range:";
+    combatRangeLabel.style.minWidth = "80px";
+    const combatRangeInput = document.createElement("input");
+    combatRangeInput.type = "number";
+    combatRangeInput.min = String(COMBAT_ATTACK_RANGE_MIN_PX);
+    combatRangeInput.max = String(COMBAT_ATTACK_RANGE_MAX_PX);
+    combatRangeInput.step = "1";
+    combatRangeInput.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    combatRangeInput.addEventListener("input", () => {
+      const mapData = this.game?.mapRenderer.getMapData();
+      if (!mapData) return;
+      const n = Number(combatRangeInput.value);
+      if (!Number.isFinite(n)) return;
+      mapData.combatSettings = mapData.combatSettings ?? {};
+      mapData.combatSettings.attackRangePx = Math.max(
+        COMBAT_ATTACK_RANGE_MIN_PX,
+        Math.min(COMBAT_ATTACK_RANGE_MAX_PX, Math.round(n)),
+      );
+    });
+    this.mapCombatRangeInput = combatRangeInput;
+    combatRangeRow.append(combatRangeLabel, combatRangeInput);
+    form.appendChild(combatRangeRow);
+
+    const combatCooldownRow = document.createElement("div");
+    combatCooldownRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const combatCooldownLabel = document.createElement("span");
+    combatCooldownLabel.textContent = "Atk Cooldown:";
+    combatCooldownLabel.style.minWidth = "80px";
+    const combatCooldownInput = document.createElement("input");
+    combatCooldownInput.type = "number";
+    combatCooldownInput.min = String(COMBAT_PLAYER_ATTACK_COOLDOWN_MIN_MS);
+    combatCooldownInput.max = String(COMBAT_PLAYER_ATTACK_COOLDOWN_MAX_MS);
+    combatCooldownInput.step = "10";
+    combatCooldownInput.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    combatCooldownInput.addEventListener("input", () => {
+      const mapData = this.game?.mapRenderer.getMapData();
+      if (!mapData) return;
+      const n = Number(combatCooldownInput.value);
+      if (!Number.isFinite(n)) return;
+      mapData.combatSettings = mapData.combatSettings ?? {};
+      mapData.combatSettings.playerAttackCooldownMs = Math.max(
+        COMBAT_PLAYER_ATTACK_COOLDOWN_MIN_MS,
+        Math.min(COMBAT_PLAYER_ATTACK_COOLDOWN_MAX_MS, Math.round(n)),
+      );
+    });
+    this.mapCombatCooldownInput = combatCooldownInput;
+    combatCooldownRow.append(combatCooldownLabel, combatCooldownInput);
+    form.appendChild(combatCooldownRow);
+
+    const combatNpcHitCdRow = document.createElement("div");
+    combatNpcHitCdRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const combatNpcHitCdLabel = document.createElement("span");
+    combatNpcHitCdLabel.textContent = "Hit Recovery:";
+    combatNpcHitCdLabel.style.minWidth = "80px";
+    const combatNpcHitCdInput = document.createElement("input");
+    combatNpcHitCdInput.type = "number";
+    combatNpcHitCdInput.min = String(COMBAT_NPC_HIT_COOLDOWN_MIN_MS);
+    combatNpcHitCdInput.max = String(COMBAT_NPC_HIT_COOLDOWN_MAX_MS);
+    combatNpcHitCdInput.step = "10";
+    combatNpcHitCdInput.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    combatNpcHitCdInput.addEventListener("input", () => {
+      const mapData = this.game?.mapRenderer.getMapData();
+      if (!mapData) return;
+      const n = Number(combatNpcHitCdInput.value);
+      if (!Number.isFinite(n)) return;
+      mapData.combatSettings = mapData.combatSettings ?? {};
+      mapData.combatSettings.npcHitCooldownMs = Math.max(
+        COMBAT_NPC_HIT_COOLDOWN_MIN_MS,
+        Math.min(COMBAT_NPC_HIT_COOLDOWN_MAX_MS, Math.round(n)),
+      );
+    });
+    this.mapCombatNpcHitCooldownInput = combatNpcHitCdInput;
+    combatNpcHitCdRow.append(combatNpcHitCdLabel, combatNpcHitCdInput);
+    form.appendChild(combatNpcHitCdRow);
+
+    const combatVarianceRow = document.createElement("div");
+    combatVarianceRow.style.cssText = "display:flex;gap:4px;align-items:center;";
+    const combatVarianceLabel = document.createElement("span");
+    combatVarianceLabel.textContent = "Dmg Variance:";
+    combatVarianceLabel.style.minWidth = "80px";
+    const combatVarianceInput = document.createElement("input");
+    combatVarianceInput.type = "number";
+    combatVarianceInput.min = String(COMBAT_DAMAGE_VARIANCE_MIN_PCT);
+    combatVarianceInput.max = String(COMBAT_DAMAGE_VARIANCE_MAX_PCT);
+    combatVarianceInput.step = "1";
+    combatVarianceInput.style.cssText = "flex:1;padding:4px;background:#181825;color:#eee;border:1px solid #444;border-radius:4px;font-size:12px;";
+    combatVarianceInput.addEventListener("input", () => {
+      const mapData = this.game?.mapRenderer.getMapData();
+      if (!mapData) return;
+      const n = Number(combatVarianceInput.value);
+      if (!Number.isFinite(n)) return;
+      mapData.combatSettings = mapData.combatSettings ?? {};
+      mapData.combatSettings.damageVariancePct = Math.max(
+        COMBAT_DAMAGE_VARIANCE_MIN_PCT,
+        Math.min(COMBAT_DAMAGE_VARIANCE_MAX_PCT, Math.round(n)),
+      );
+    });
+    this.mapCombatVarianceInput = combatVarianceInput;
+    combatVarianceRow.append(combatVarianceLabel, combatVarianceInput);
+    form.appendChild(combatVarianceRow);
 
     const statusRow = document.createElement("div");
     statusRow.style.cssText = "display:flex;gap:4px;align-items:center;";
@@ -1789,6 +2062,27 @@ export class MapEditorPanel {
     if (this.mapNameInput) this.mapNameInput.value = mapData.name ?? "";
     if (this.mapMusicSelect) this.mapMusicSelect.value = mapData.musicUrl ?? "";
     if (this.mapCombatCheck) this.mapCombatCheck.checked = mapData.combatEnabled ?? false;
+    if (this.mapCombatRangeInput) {
+      this.mapCombatRangeInput.value = String(
+        mapData.combatSettings?.attackRangePx ?? COMBAT_ATTACK_RANGE_PX,
+      );
+    }
+    if (this.mapCombatCooldownInput) {
+      this.mapCombatCooldownInput.value = String(
+        mapData.combatSettings?.playerAttackCooldownMs ??
+          COMBAT_PLAYER_ATTACK_COOLDOWN_MS,
+      );
+    }
+    if (this.mapCombatNpcHitCooldownInput) {
+      this.mapCombatNpcHitCooldownInput.value = String(
+        mapData.combatSettings?.npcHitCooldownMs ?? COMBAT_NPC_HIT_COOLDOWN_MS,
+      );
+    }
+    if (this.mapCombatVarianceInput) {
+      this.mapCombatVarianceInput.value = String(
+        mapData.combatSettings?.damageVariancePct ?? COMBAT_DAMAGE_VARIANCE_PCT,
+      );
+    }
     if (this.mapStatusSelect) this.mapStatusSelect.value = mapData.status ?? "published";
   }
 
@@ -2194,6 +2488,7 @@ export class MapEditorPanel {
         type: l.type as "bg" | "obj" | "overlay",
         tiles: JSON.stringify(l.tiles),
         visible: l.visible,
+        tilesetUrl: l.tilesetUrl,
       }));
 
       const collisionMask = JSON.stringify(mapData.collisionMask);
@@ -2242,6 +2537,7 @@ export class MapEditorPanel {
       if (mapData.animationUrl != null) saveArgs.animationUrl = mapData.animationUrl;
       if (mapData.musicUrl != null) saveArgs.musicUrl = mapData.musicUrl;
       if (mapData.combatEnabled != null) saveArgs.combatEnabled = mapData.combatEnabled;
+      if (mapData.combatSettings != null) saveArgs.combatSettings = mapData.combatSettings;
       if (mapData.status != null) saveArgs.status = mapData.status;
 
       await convex.mutation(api.maps.saveFullMap, saveArgs as any);

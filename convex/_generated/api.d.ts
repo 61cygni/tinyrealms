@@ -9,6 +9,7 @@
  */
 
 import type * as admin from "../admin.js";
+import type * as ai from "../ai.js";
 import type * as auth from "../auth.js";
 import type * as chat from "../chat.js";
 import type * as http from "../http.js";
@@ -24,12 +25,19 @@ import type * as mechanics_economy from "../mechanics/economy.js";
 import type * as mechanics_inventory from "../mechanics/inventory.js";
 import type * as mechanics_loot from "../mechanics/loot.js";
 import type * as migrations from "../migrations.js";
+import type * as npc_braintrust from "../npc/braintrust.js";
+import type * as npc_chat from "../npc/chat.js";
+import type * as npc_memory from "../npc/memory.js";
+import type * as npc_policy from "../npc/policy.js";
+import type * as npc_router from "../npc/router.js";
+import type * as npc_services_dialogue from "../npc/services/dialogue.js";
 import type * as npcEngine from "../npcEngine.js";
 import type * as npcProfiles from "../npcProfiles.js";
 import type * as npcs from "../npcs.js";
 import type * as players from "../players.js";
 import type * as presence from "../presence.js";
 import type * as profiles from "../profiles.js";
+import type * as quests from "../quests.js";
 import type * as spriteDefinitions from "../spriteDefinitions.js";
 import type * as spriteSheets from "../spriteSheets.js";
 import type * as storage from "../storage.js";
@@ -49,6 +57,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   admin: typeof admin;
+  ai: typeof ai;
   auth: typeof auth;
   chat: typeof chat;
   http: typeof http;
@@ -64,12 +73,19 @@ declare const fullApi: ApiFromModules<{
   "mechanics/inventory": typeof mechanics_inventory;
   "mechanics/loot": typeof mechanics_loot;
   migrations: typeof migrations;
+  "npc/braintrust": typeof npc_braintrust;
+  "npc/chat": typeof npc_chat;
+  "npc/memory": typeof npc_memory;
+  "npc/policy": typeof npc_policy;
+  "npc/router": typeof npc_router;
+  "npc/services/dialogue": typeof npc_services_dialogue;
   npcEngine: typeof npcEngine;
   npcProfiles: typeof npcProfiles;
   npcs: typeof npcs;
   players: typeof players;
   presence: typeof presence;
   profiles: typeof profiles;
+  quests: typeof quests;
   spriteDefinitions: typeof spriteDefinitions;
   spriteSheets: typeof spriteSheets;
   storage: typeof storage;

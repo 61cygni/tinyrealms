@@ -12,7 +12,7 @@ export class MapRenderer {
   private game: Game;
   private mapData: MapData | null = null;
   private layerContainers: Container[] = [];
-  private tilesetTexture: Texture | null = null;
+  private tilesetTextures = new Map<string, Texture>();
   /** Container for overlay-type map layers (renders above entities) */
   overlayLayerContainer: Container;
   private portalOverlay: Container;
@@ -59,8 +59,13 @@ export class MapRenderer {
     this.gridOverlay = null;
     this.mapData = mapData;
 
-    // Load tileset texture
-    this.tilesetTexture = await Assets.load(mapData.tilesetUrl);
+    // Load all tilesets referenced by map + per-layer overrides
+    const urls = new Set<string>();
+    urls.add(mapData.tilesetUrl);
+    for (const layer of mapData.layers) {
+      urls.add(layer.tilesetUrl ?? mapData.tilesetUrl);
+    }
+    await Promise.all([...urls].map((url) => this.loadTilesetTexture(url)));
 
     // Render each layer
     this.overlayLayerContainer.removeChildren();
@@ -68,8 +73,10 @@ export class MapRenderer {
       const layerContainer = new Container();
       layerContainer.label = layer.name;
       layerContainer.visible = layer.visible;
+      const layerTilesetUrl = layer.tilesetUrl ?? mapData.tilesetUrl;
+      const layerTilesetTexture = this.tilesetTextures.get(layerTilesetUrl);
 
-      this.renderLayer(layerContainer, layer, mapData);
+      this.renderLayer(layerContainer, layer, mapData, layerTilesetTexture);
       this.layerContainers.push(layerContainer);
 
       if (layer.type === "overlay") {
@@ -119,11 +126,13 @@ export class MapRenderer {
   private renderLayer(
     container: Container,
     layer: MapLayer,
-    mapData: MapData
+    mapData: MapData,
+    tilesetTexture?: Texture
   ) {
-    if (!this.tilesetTexture) return;
+    if (!tilesetTexture) return;
 
-    const tilesPerRow = Math.floor(mapData.tilesetPxW / mapData.tileWidth);
+    const sourceWidth = (tilesetTexture.source as any)?.width ?? mapData.tilesetPxW;
+    const tilesPerRow = Math.floor(sourceWidth / mapData.tileWidth);
 
     for (let y = 0; y < mapData.height; y++) {
       for (let x = 0; x < mapData.width; x++) {
@@ -140,7 +149,7 @@ export class MapRenderer {
           mapData.tileHeight
         );
         const texture = new Texture({
-          source: this.tilesetTexture!.source,
+          source: tilesetTexture.source,
           frame,
         });
 
@@ -154,7 +163,7 @@ export class MapRenderer {
 
   /** Update a single tile in a layer (for editor) */
   setTile(layerIndex: number, x: number, y: number, tileIndex: number) {
-    if (!this.mapData || !this.tilesetTexture) return;
+    if (!this.mapData) return;
 
     const layer = this.mapData.layers[layerIndex];
     const idx = y * this.mapData.width + x;
@@ -162,9 +171,11 @@ export class MapRenderer {
 
     // Re-render this layer
     const container = this.layerContainers[layerIndex];
+    const tilesetUrl = layer.tilesetUrl ?? this.mapData.tilesetUrl;
+    const tilesetTexture = this.tilesetTextures.get(tilesetUrl);
     if (container) {
       container.removeChildren();
-      this.renderLayer(container, layer, this.mapData);
+      this.renderLayer(container, layer, this.mapData, tilesetTexture);
     }
   }
 
@@ -526,6 +537,7 @@ export class MapRenderer {
     ty: number,
     region: { col: number; row: number; w: number; h: number } | null,
     tsCols: number,
+    tilesetUrl?: string,
   ) {
     if (!this.mapData) return;
     const tw = this.mapData.tileWidth;
@@ -550,7 +562,9 @@ export class MapRenderer {
     // Hide outline cursor
     if (this.tileCursorOutline) this.tileCursorOutline.visible = false;
 
-    if (!this.tilesetTexture) return;
+    const sourceTilesetUrl = tilesetUrl ?? this.mapData.tilesetUrl;
+    const tilesetTexture = this.tilesetTextures.get(sourceTilesetUrl);
+    if (!tilesetTexture) return;
 
     // Rebuild the ghost container with the correct tiles
     if (!this.tileGhostContainer) {
@@ -570,7 +584,7 @@ export class MapRenderer {
           const srcX = (tileIdx % tsCols) * tw;
           const srcY = Math.floor(tileIdx / tsCols) * th;
           const frame = new Rectangle(srcX, srcY, tw, th);
-          const tex = new Texture({ source: this.tilesetTexture!.source, frame });
+          const tex = new Texture({ source: tilesetTexture.source, frame });
           const s = new Sprite(tex);
           s.x = dx * tw;
           s.y = dy * th;
@@ -597,10 +611,14 @@ export class MapRenderer {
     ty: number,
     tiles: { dx: number; dy: number; tileIdx: number }[],
     tsCols: number,
+    tilesetUrl?: string,
   ) {
-    if (!this.mapData || !this.tilesetTexture) return;
+    if (!this.mapData) return;
     const tw = this.mapData.tileWidth;
     const th = this.mapData.tileHeight;
+    const sourceTilesetUrl = tilesetUrl ?? this.mapData.tilesetUrl;
+    const tilesetTexture = this.tilesetTextures.get(sourceTilesetUrl);
+    if (!tilesetTexture) return;
 
     if (this.tileCursorOutline) this.tileCursorOutline.visible = false;
 
@@ -619,7 +637,7 @@ export class MapRenderer {
         const srcX = (t.tileIdx % tsCols) * tw;
         const srcY = Math.floor(t.tileIdx / tsCols) * th;
         const frame = new Rectangle(srcX, srcY, tw, th);
-        const tex = new Texture({ source: this.tilesetTexture!.source, frame });
+        const tex = new Texture({ source: tilesetTexture.source, frame });
         const s = new Sprite(tex);
         s.x = t.dx * tw;
         s.y = t.dy * th;
@@ -694,5 +712,13 @@ export class MapRenderer {
 
     this.gridOverlay.stroke({ color: 0xffffff, alpha: 0.15, width: 1 });
     this.gridOverlay.visible = true;
+  }
+
+  private async loadTilesetTexture(url: string): Promise<Texture> {
+    const existing = this.tilesetTextures.get(url);
+    if (existing) return existing;
+    const loaded = await Assets.load(url);
+    this.tilesetTextures.set(url, loaded);
+    return loaded;
   }
 }
