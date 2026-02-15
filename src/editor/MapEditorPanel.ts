@@ -519,6 +519,15 @@ export class MapEditorPanel {
       this.showSaveStatus("Map must have at least one layer", true);
       return;
     }
+    const target = mapData.layers[this.activeLayer];
+    if (!target) return;
+    const confirmed = window.confirm(
+      `Delete layer "${target.name}"? This removes all tiles on that layer.`,
+    );
+    if (!confirmed) {
+      this.showSaveStatus("Layer delete cancelled", false);
+      return;
+    }
     const removed = mapData.layers.splice(this.activeLayer, 1)[0];
     this.activeLayer = Math.max(0, Math.min(this.activeLayer, mapData.layers.length - 1));
     this.game.mapRenderer.loadMap(mapData);
@@ -531,7 +540,13 @@ export class MapEditorPanel {
     if (!mapData || !this.game) return;
     const from = this.activeLayer;
     const to = from + delta;
-    if (to < 0 || to >= mapData.layers.length) return;
+    if (to < 0 || to >= mapData.layers.length) {
+      this.showSaveStatus(
+        delta < 0 ? "Layer is already at the top" : "Layer is already at the bottom",
+        true,
+      );
+      return;
+    }
     const [moved] = mapData.layers.splice(from, 1);
     mapData.layers.splice(to, 0, moved);
     this.activeLayer = to;

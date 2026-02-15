@@ -5,6 +5,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-height: 0;
 }
 
 .layer-panel-label {
@@ -19,6 +20,10 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 
 .layer-btn {
@@ -48,6 +53,7 @@
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
+  flex-shrink: 0;
 }
 
 .layer-ctrl-btn {

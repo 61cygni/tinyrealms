@@ -1,210 +1,174 @@
 # Operations Runbook
 
-Operational guide for managing **Here** as a long-lived persistent world.
-
----
+Operational guide for running **Here** safely in local/dev/prod-like environments.
 
 ## 1) Security Prerequisite
 
-Most admin and migration commands are protected by `ADMIN_API_KEY`.
-
-Set it in your shell before running operations:
+Most admin/migration/data-management commands are protected by `ADMIN_API_KEY`.
 
 ```bash
 export ADMIN_API_KEY="your-strong-secret"
-```
-
-Set it for Convex backend validation:
-
-```bash
-npx convex env set ADMIN_API_KEY "your-strong-secret"
+npx convex env set ADMIN_API_KEY "$ADMIN_API_KEY"
 ```
 
 Both values must match.
 
----
-
-## 2) Daily / Per-Deploy Checklist
-
-- Run typecheck + lint:
-  - `npm run typecheck`
-  - `npm run lint`
-- Audit map sizes:
-  - `npm run audit:maps`
-- Backup world state before risky changes:
-  - `npm run backup:world`
-- If touching schema, follow migration phases in `docs/EvolvingTheWorld.md`.
-
----
-
-## 3) Backup Strategy
-
-### Manual backup
+## 2) Core Dev Commands
 
 ```bash
-npm run dump
-npm run dump:full
+npm run dev            # frontend + local Convex backend
+npm run dev:cloud      # frontend + cloud Convex backend
+npm run build
+npm run lint
+npm run typecheck
 ```
 
-- `dump` excludes full tile payloads in maps (compact)
-- `dump:full` includes full tile payloads (large)
+## 3) Backups and Restore
 
-### Automated local backup helper
+### Backups
 
 ```bash
-npm run backup:world
+npm run dump           # compact dump
+npm run dump:full      # includes full tile payloads
+npm run backup:world   # rotating backup helper
 ```
 
-- Creates a new dump in `dumps/`
-- Prunes old dumps (default retention 14 days)
-- Optional:
-  - `node scripts/backup-world.mjs --full --retention-days 30`
-
----
-
-## 4) Selective Restore (Safe Mode)
-
-Use selective restore for controlled recovery of specific world tables.
-
-### Dry-run plan first
+### Restore (safe path)
 
 ```bash
-npm run restore:world -- --in dumps/state-2026-...json --tables maps,itemDefs --dry-run
+npm run restore:world -- --in dumps/<file>.json --tables maps,itemDefs --dry-run
+npm run restore:world -- --in dumps/<file>.json --tables maps,itemDefs --confirm
 ```
 
-### Execute restore
+Restore behavior:
 
-```bash
-npm run restore:world -- --in dumps/state-2026-...json --tables maps,itemDefs --confirm
-```
+- table allowlist only
+- chunked inserts
+- sanitizes unsafe IDs/fields
+- writes verification report in `dumps/`
 
-You will be prompted to type `RESTORE`.
+Current allowlisted restore tables:
 
-### What restore does
+- `maps`, `spriteDefinitions`, `npcProfiles`, `mapObjects`, `itemDefs`, `worldItems`, `messages`
 
-- Clears only selected allowlisted tables
-- Reinserts rows in chunks
-- Sanitizes unsafe fields (`_id`, `_creationTime`, and sensitive cross-deployment IDs)
-- Writes a verification report:
-  - `dumps/restore-report-<timestamp>.json`
-  - Includes before/after counts and SHA-256 hashes per selected table
+## 4) User and Permission Management
 
-### Current restore allowlist
-
-- `maps`
-- `spriteDefinitions`
-- `npcProfiles`
-- `mapObjects`
-- `itemDefs`
-- `worldItems`
-- `messages`
-
----
-
-## 5) User/Admin Management
-
-### List users/profiles
+### User/profile management
 
 ```bash
 npm run users list
-```
-
-### Role changes
-
-```bash
 npm run users -- set-superuser alice@test.com:Alice
 npm run users -- set-role bob@test.com:Warrior player
-```
-
-### Remove user/profile
-
-```bash
 npm run users -- remove-user alice@test.com
 npm run users -- remove-profile alice@test.com:Alice
+npm run users:remove-anonymous
 ```
 
----
+### Auth/admin helper commands
 
-## 6) Emergency Procedures
+```bash
+npm run auth:list-users
+npm run auth:assign-profiles
+npm run auth:grant-admin
+npm run auth:grant-editor
+```
 
-### Bad backend deploy
+Reference permission model:
 
-1. Revert code changes
-2. Restart/deploy Convex
-3. Validate critical queries/mutations
-4. If data changed unexpectedly, restore selected tables from latest known-good dump
+- see `docs/AuthPermissions.md` for role hierarchy, ownership, visibility, and server enforcement
 
-### Data corruption suspected
+## 5) Level / Map Management
 
-1. Stop high-risk admin edits
-2. Create immediate backup (`npm run dump:full`)
-3. Run targeted restore dry-run to inspect impact
-4. Execute selective restore only for affected tables
-5. Verify with restore report hashes and in-app checks
+### Map inspection and exports
 
----
+```bash
+npm run maps:list
+npm run dump:maps
+npm run audit:maps
+```
 
-## 7) Local Database Maintenance
+### Map/profile resets
 
-The Convex local backend stores all mutations in an append-only SQLite file at
-`~/.convex/convex-backend-state/<deployment>/convex_local_backend.sqlite3`.
+```bash
+npm run reset:map
+npm run reset:all-maps
+```
 
-High-frequency mutations (presence updates, NPC ticks) can cause this to grow
-to multiple GB over days of development.
+### Map/object/world cleanup helpers
 
-### Check database size
+```bash
+npm run clear:objects
+npm run clear:presence
+npm run clear:chat
+npm run clear:profiles
+```
+
+## 6) NPC, Quest, and Combat Ops Helpers
+
+```bash
+npm run npcs:list
+npm run clear:npcs
+npm run npc:test:ai
+
+npm run quests:seed
+npm run quests:list-defs
+npm run quests:list-profile -- '{"profileId":"<PROFILE_ID>"}'
+```
+
+## 7) Migrations and Backfills
+
+```bash
+npm run backfill:maps
+npm run migrate:player-refs
+npm run migrate:player-cleanup
+npm run migrate:npc-ai-defaults
+```
+
+Run these with fresh backups and a rollback plan.
+
+## 8) Local Convex DB Maintenance
+
+Convex local state can grow large over time.
 
 ```bash
 npm run db:check
-```
-
-### Compact without losing data
-
-Stop the backend first (`Ctrl+C` on `npx convex dev`), then:
-
-```bash
 npm run db:compact
 ```
 
-This runs `VACUUM` on the SQLite file, reclaiming unused pages.
+For hard reset (destructive), remove local sqlite backend state and restart `convex dev`.
 
-### Full reset (loses local data)
+## 9) Suggested Operational Cadence
 
-```bash
-rm ~/.convex/convex-backend-state/local-*/convex_local_backend.sqlite3
-npx convex dev
-```
+- Daily active development: `npm run backup:world`
+- Before migrations/admin cleanup: `npm run dump:full`
+- Weekly: `npm run audit:maps` + `npm run db:check`
+- Before major release: lint/typecheck/build + backup + restore dry-run
 
-Maps will be re-seeded from static JSON on first load. You'll need to:
-- Re-set environment variables (`JWT_PRIVATE_KEY`, `JWKS`, `ADMIN_API_KEY`)
-- Re-create user accounts and characters
-- Optionally restore from backup: `npm run restore:world -- --in dumps/<file> --tables maps,itemDefs --confirm`
+## 10) Incident Basics
 
-### Mutation budget (what drives DB growth)
+### If a deploy introduces bad data
 
-| Source | Interval | Mutations/hour (1 client) |
-|--------|----------|---------------------------|
-| Presence updates | 1000ms (delta-only) | ~1,000–3,600 |
-| NPC tick | 1500ms | ~2,400 |
-| Profile save | 30s | ~120 |
+1. Stop risky admin edits
+2. Create immediate full dump
+3. Dry-run restore on affected tables
+4. Execute targeted restore
+5. Validate counts/hash report + smoke-test critical gameplay loops
 
-These intervals are tuned to balance responsiveness and DB growth. If developing
-offline for extended periods, run `npm run db:compact` periodically.
+### If permissions look wrong
 
----
+1. Verify `ADMIN_API_KEY` and auth env vars
+2. Check role assignments (`users` / `auth:*` commands)
+3. Confirm ownership + visibility per `docs/AuthPermissions.md`
 
-## 8) Recommended Cadence
+## 11) Related Docs
 
-- **Daily while actively editing world:** `npm run backup:world`
-- **Before schema or admin script changes:** `npm run dump:full`
-- **Weekly:** run `npm run audit:maps` and `npm run db:check` to inspect growth trends
-- **Before major releases:** run full checklist + dry-run selective restore on staging/local copy
-
----
-
-## 9) Related Docs
-
-- `docs/EvolvingTheWorld.md` — architecture and migration strategy
-- `docs/Auth.md` — auth and permissions model
-- `docs/5.3Codex.md` — architecture critique + remediation tracking
-- `docs/deploymet.md` — deployment workflow (Netlify + Convex)
+- `docs/AuthPermissions.md` - auth, ownership, roles, and permissions
+- `docs/LevelCreate.md` - map/level authoring workflow
+- `docs/Objects.md` - objects, doors, toggleables
+- `docs/NPCs.md` - NPC profile/AI/runtime workflow
+- `docs/Items.md` - item and world-item workflow
+- `docs/Combat.md` - combat architecture and tuning
+- `docs/Quests.md` - quest design, lifecycle, and runtime integrations
+- `docs/EvolvingTheWorld.md` - architecture and migration strategy
+- `docs/5.3Codex.md` - architecture critique and hardening notes
+- `docs/deploymet.md` - deployment workflow

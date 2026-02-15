@@ -1,409 +1,260 @@
-# NPCs (Consolidated Guide)
+# NPC Design Workflow
 
-This is the single source of truth for NPCs in Tiny Realms.
-It consolidates prior NPC, character, AI-NPC, and NPC-creation docs into one end-to-end reference.
+This is the current source of truth for designing, placing, and running NPCs.
+It covers sprite authoring, instance/profile linking, AI/procedural dialogue modes,
+hostile/combat behavior, sounds, permissions, and debugging.
 
-## What This Covers
+## Quick Mental Model
 
-- Building NPC sprites from raw PNG assets
-- Registering sheets and creating NPC sprite definitions
-- Placing NPCs in maps and assigning unique identity
-- Writing rich profile/backstory/relationship data
-- Enabling AI NPC chat with Braintrust slugs and prompts
-- Testing in the editor and in game
-- Troubleshooting the most common failures
+An NPC is composed from four layers:
 
----
+1. `spriteDefinitions` (`category: "npc"`) - visuals + movement/sound defaults
+2. `mapObjects` - placement on a specific map, including `instanceName`
+3. `npcProfiles` - identity, narrative, AI policy, combat-related traits
+4. `npcState` - server-authoritative runtime position/combat state
 
-## 1) Architecture Overview
+Most behavior problems come from link mismatch between `mapObjects.instanceName`
+and `npcProfiles.name`.
 
-An NPC is composed from 4 layers:
+## 1) Asset Pipeline (PNG -> Character Sheet)
 
-1. `spriteDefinitions` (with `category: "npc"`) - visual config and movement defaults
-2. `mapObjects` - placement on a map and optional `instanceName`
-3. `npcProfiles` - identity, narrative, stats, and AI config
-4. `npcState` - server-authoritative runtime movement state
+Use the in-project sprite tool:
 
-Mental model:
-
-- sprite definition = body
-- map object = where it exists
-- profile = mind/personality
-- npcState = live motion state
-
-### Key Link
-
-`mapObjects.instanceName` must match `npcProfiles.name`.
-
-If this link is missing, runtime falls back to default procedural dialogue.
-
----
-
-## 2) Asset Pipeline (PNG -> spritesheet)
-
-## 2.1 Use the Spritesheet Tool
-
-Open:
-
-- `http://localhost:5173/sprited.html` (or your active Vite port)
+- `/sprited.html` (local dev URL)
 
 Workflow:
 
-1. Load source PNG (grid or frame files)
-2. Set source frame width and height
-3. Build animation rows/sequences
-4. Optionally set target output frame size
-5. Export spritesheet PNG + JSON
+1. Import source PNG(s)
+2. Define frame size and animation rows
+3. Export Pixi-compatible `.png` + `.json`
+4. Place files under `public/assets/characters/`
+5. Register new sheet in `src/config/spritesheet-config.ts` under `NPC_SPRITE_SHEETS`
 
-Expected output:
-
-- `my-npc.png`
-- `my-npc.json` (Pixi-compatible spritesheet metadata)
-
-## 2.2 Put files in project
-
-Use:
-
-- `public/assets/characters/`
-
-Example:
-
-- `public/assets/characters/kita.png`
-- `public/assets/characters/kita.json`
-
-## 2.3 Direction rows
-
-Default directional mapping:
+Default directional row convention:
 
 - `row0` down
 - `row1` up
 - `row2` right
 - `row3` left
 
-If your sheet layout differs, map directions explicitly in NPC sprite settings.
+If your sheet differs, set custom row mapping in NPC sprite settings.
 
----
+## 2) Create NPC Sprite Definitions
 
-## 3) Register NPC sheet in config
+In Build mode:
 
-Edit:
+- NPCs panel -> **NPC Sprites**
 
-- `src/config/spritesheet-config.ts`
+Create an NPC sprite definition with:
 
-Add entry in `NPC_SPRITE_SHEETS`:
+- name (unique)
+- sprite sheet URL
+- frame width/height
+- default animation
+- scale + animation speed
 
-```ts
-{ name: "Kita", jsonUrl: "/assets/characters/kita.json" }
-```
+NPC-specific behavior fields:
 
----
-
-## 4) Create NPC Sprite Definition
-
-In game:
-
-- Build mode -> NPCs -> `NPC Sprites`
-
-Create definition with:
-
-- Name (unique)
-- Sheet
-- Default animation
-- Scale and animation speed
-- Frame width/height (from sheet)
-
-NPC-specific settings:
-
-- `npcSpeed`
-- `npcWanderRadius`
+- `npcSpeed` (default about 30 px/s)
+- `npcWanderRadius` (default about 60 px)
 - `npcDirDown`, `npcDirUp`, `npcDirLeft`, `npcDirRight`
 - `npcGreeting`
 
-Optional sound settings:
+Sound fields:
 
-- `ambientSoundUrl`, `ambientSoundRadius`, `ambientSoundVolume`
-- `interactSoundUrl`
+- `interactSoundUrl` (one-shot on E interaction)
+- `ambientSoundUrl` (loop)
+- `ambientSoundRadius`
+- `ambientSoundVolume`
 
-Save writes to `spriteDefinitions` with `category: "npc"`.
-
----
-
-## 5) Place NPC on map
-
-In map editor:
-
-1. Build mode -> NPC tool
-2. Select NPC sprite definition
-3. Click to place on map
-4. Save map
-
-This creates/updates `mapObjects`.
-
----
-
-## 6) Assign Instance Identity (NPC Instances panel)
-
-Open:
-
-- Build mode -> NPCs -> `NPC Instances`
-
-For each placed NPC:
-
-1. Set a unique Instance Name (slug-like), e.g. `kita-lost-child`
-2. Set display identity fields
-3. Save
-
-Without instance naming, the NPC has no stable profile link.
-
----
-
-## 7) Build Rich NPC Profiles
-
-In `NPC Instances`, fill these sections:
-
-- Identity: display name, title, faction, tags, visibility
-- Narrative: backstory, personality, dialogue style
-- Knowledge and secrets
-- Stats: hp/maxHp/atk/def/spd/level
-- Inventory
-- Relationships (by other NPC instance names)
-- LLM System Prompt
-
-This writes to `npcProfiles`.
-
----
-
-## 8) Enable AI NPC Chat
-
-In `NPC Instances` -> AI section:
-
-- `NPC Type` -> `AI`
-- check `Enable AI chat`
-- check `Allow chat capability`
-- set `Braintrust Slug`
-- set or refine `System Prompt`
-
-Then click `Save`.
-
-### Stored fields
-
-AI behavior is driven by:
-
-- `npcType: "ai"`
-- `aiEnabled: true`
-- `braintrustSlug: "<slug>"`
-- `aiPolicy.capabilities.canChat: true`
-
----
-
-## 9) Convex + Braintrust Setup
-
-Set backend env vars in Convex:
-
-- `BRAINTRUST_API_KEY`
-- `BRAINTRUST_PROJECT_NAME`
-
-Do not expose Braintrust keys in frontend `VITE_*` variables.
-
-Convex AI proxy endpoints:
-
-- `POST /ai/invoke`
-- `POST /ai/stream`
-
-Optional frontend helper env:
-
-- `VITE_CONVEX_HTTP_URL=https://<deployment>.convex.site`
-
----
-
-## 10) Prompt Design for Braintrust Slugs
-
-Current invoke input passed from game includes:
-
-- `input.npcProfileName`
-- `input.mapName`
-- `input.userMessage`
-- `input.systemPrompt`
-- `input.historyText`
-- `input.messages`
-
-Safe starter prompt (minimal templating assumptions):
-
-```text
-You are {{input.npcProfileName}}, an NPC in Tiny Realms.
-Current map: {{input.mapName}}
-
-Character prompt:
-{{input.systemPrompt}}
-
-Recent conversation:
-{{input.historyText}}
-
-Player says:
-{{input.userMessage}}
-
-Respond in-character. Keep replies concise (1-3 sentences).
-Return plain text only.
-```
-
-Recommendation:
-
-- start simple
-- avoid `#if` and `#each` helpers unless your Braintrust template runtime for that slug supports them
-- add complexity only after baseline works
-
----
-
-## 11) Testing Workflows
-
-## 11.1 Editor test (fastest)
-
-In `NPC Instances`:
-
-- set AI fields
-- click `Save`
-- use `Test Message`
-- click `Test AI`
-- inspect `Test AI Output`
-
-## 11.2 CLI proxy test
-
-Use:
-
-- `npm run npc:test:ai -- --project <project> --slug <slug> --input "hello"`
-
-Optional:
-
-- `--url https://<deployment>.convex.site`
-- `--stream`
-- `--raw`
-
-## 11.3 In-game test
-
-Press `E` near the NPC.
-
-Expected:
-
-- AI-enabled NPCs open free-text chat splash
-- procedural NPCs open branching procedural dialogue splash
-
----
-
-## 12) Runtime behavior details
-
-At interaction time:
-
-1. Resolve NPC instance identity from runtime state/map object
-2. Load matching profile
-3. If AI fields are valid (`npcType`, `aiEnabled`, `canChat`), use AI chat path
-4. Otherwise use procedural path
-
-Notes:
-
-- Runtime includes safeguards for stale `npcState.instanceName` by falling back to map-object instance mapping.
-- This prevents false procedural fallback when map object has correct instance name but npcState lags.
-
----
-
-## 13) Troubleshooting
-
-### Issue: Pressing E still shows procedural dialogue
-
-Check:
-
-1. `mapObjects.instanceName` exists and matches `npcProfiles.name`
-2. profile has:
-   - `npcType = "ai"`
-   - `aiEnabled = true`
-   - `aiPolicy.capabilities.canChat = true`
-3. `braintrustSlug` is valid
-4. Convex env vars are set
-5. `npx convex dev` is running latest functions
-
-### Issue: Test AI returns "Hello there."
-
-This means invoke path executed but no usable text was extracted.
-Check Convex logs for:
-
-- invoke response keys
-- Braintrust error body
-
-Then adjust slug prompt/output schema.
-
-### Issue: Braintrust invoke 400
-
-Usually template mismatch or unsupported helper syntax.
-Start with the simple prompt in this doc and add complexity gradually.
-
----
-
-## 14) Visibility and ownership
-
-`npcProfiles` supports:
+Visibility/ownership:
 
 - `visibilityType`: `private` | `public` | `system`
-- `createdByUser`
+- system entries are superuser-only
 
-Visibility affects who can load/edit profiles in client-driven flows.
-For shared AI NPCs used by multiple users, use `public` or `system`.
+## 3) Place NPCs on the Map
 
----
+In Build mode map editor:
 
-## 15) AI-Related Data Tables
+1. Select NPC placement tool
+2. Choose NPC sprite definition
+3. Click to place
+4. Save map
 
-Main profile fields:
+This creates or updates `mapObjects` rows for placed NPC objects.
 
-- `npcType`
+## 4) Assign Stable Instance Identity
+
+In NPCs panel:
+
+- **NPC Instances** tab
+
+For each placed NPC, set/confirm `instanceName` (slug style, e.g. `dog-barn-1`).
+
+Important:
+
+- `instanceName` is the bridge to profile and AI behavior.
+- Assignment is slugified and made unique server-side.
+- If blank/conflicting, system can auto-suffix (`-2`, `-3`, ...).
+
+Without stable instance naming, the NPC falls back to generic/procedural behavior.
+
+## 5) Build NPC Profiles (Mind/Behavior Layer)
+
+Profile editing is done from **NPC Instances**.
+
+Common sections:
+
+- identity: display name, title, faction, tags
+- narrative: backstory, personality, dialogue style
+- knowledge/secrets
+- stats: hp/maxHp/atk/def/spd/level
+- inventory
+- relationships
+- visibility (`private`/`public`/`system`)
+
+AI-related fields:
+
+- `npcType` (`procedural` or `ai`)
 - `aiEnabled`
 - `braintrustSlug`
-- `aiPolicy.capabilities.*`
+- `aiPolicy.capabilities.*` including `canChat`
 
-Supporting AI tables:
+## 6) Dialogue Modes and E Interaction
 
-- `npcConversations`
-- `npcMemories`
-- `npcActionLog`
+Interaction mode is resolved at runtime:
 
----
+- no linked profile / procedural config -> procedural dialogue
+- `npcType=ai` + `aiEnabled=true` + chat capability -> AI chat splash
+- chat disabled (`canChat === false`) -> dialogue disabled
 
-## 16) File Map
+Current interaction UX behavior:
 
-Core client files:
+- Press `E` near non-hostile NPC:
+  - if chat-enabled: opens dialogue/chat
+  - if chat-disabled: still interacts (faces player + plays interact sound)
+- Hostile + combat-enabled map:
+  - hint becomes attack flow, not E-chat flow
+
+This allows "bark on interact" style NPCs even with chat disabled.
+
+## 7) Sounds (Ambient + Interact/Greeting)
+
+Ambient sound:
+
+- loops while NPC exists
+- volume scales by distance using radius and base volume
+- stops when NPC removed/destroyed
+
+Interact/greeting sound:
+
+- `interactSoundUrl` plays on E interaction
+- plays even when chat is disabled
+
+Sound files should be registered in `src/config/audio-config.ts`.
+
+## 8) Hostile/Combat NPC Design
+
+To make an NPC hostile:
+
+- add hostile-related tags (for example `hostile`)
+- configure aggression/profile combat fields as needed
+- ensure the map has combat enabled
+
+Behavior:
+
+- hostile NPCs on combat-enabled maps route to attack interaction hints
+- combat uses server-authoritative `npcState` fields and tick loop
+- client displays hit effects from server results
+
+If combat is off on the map, hostile tag alone does not produce attack interaction.
+
+## 9) Permissions and Edit Access
+
+Sprite definitions and NPC profiles are permissioned by ownership + visibility:
+
+- owner can edit own private/public records
+- superuser can edit broadly
+- system visibility is restricted
+
+Instance assignment and map-linked operations also require map edit ownership
+or superuser access.
+
+## 10) Save + Runtime Sync (How Changes Go Live)
+
+Sprite/profile edits:
+
+- save directly to Convex tables
+- take effect immediately or on next interaction/load depending field
+
+Map placement edits:
+
+1. save map/object data
+2. backend sync updates `npcState` rows for map objects
+3. runtime subscriptions refresh client NPC entities
+4. server tick loop drives authoritative movement/combat
+
+If an NPC does not appear or behaves incorrectly, verify both `mapObjects`
+and `npcState` rows exist and are linked by object/instance identity.
+
+## 11) Troubleshooting Checklist
+
+### E opens wrong mode or no AI
+
+- verify `mapObjects.instanceName` matches `npcProfiles.name`
+- verify `npcType`, `aiEnabled`, and `canChat`
+- verify `braintrustSlug` and Convex AI env vars
+
+### E should only bark (no chat)
+
+- set chat capability off (`canChat=false`)
+- keep `interactSoundUrl` set in sprite definition
+- verify NPC is not routed to hostile attack mode on this map
+
+### NPC missing from map
+
+- confirm sprite definition category is NPC
+- confirm map save completed
+- confirm `npcEngine` sync/tick is running
+- inspect `mapObjects` + `npcState` in Convex dashboard
+
+### Sound not audible
+
+- verify file exists and URL is correct
+- verify sound is in sound config list
+- for ambient, increase radius/volume and test close distance
+
+## 12) Recommended Production Sequence
+
+1. Build/export sprite sheet assets
+2. Register sheet in `NPC_SPRITE_SHEETS`
+3. Create NPC sprite definition
+4. Place NPC in map and save
+5. Assign/confirm stable `instanceName`
+6. Fill profile (identity + narrative + stats + tags)
+7. Configure AI policy/capabilities (or disable chat for bark-only)
+8. Set interact + ambient sounds
+9. Validate in editor (test actions) and in game (`E`, combat, movement)
+
+## Key Source Files
 
 - `src/ui/NpcEditorPanel.ts`
 - `src/engine/EntityLayer.ts`
 - `src/engine/NPC.ts`
 - `src/npc/dialogue/NpcDialogueController.ts`
 - `src/splash/screens/AiChatSplash.ts`
-
-Core backend files:
-
 - `convex/npcProfiles.ts`
+- `convex/npcEngine.ts`
 - `convex/npc/chat.ts`
 - `convex/npc/braintrust.ts`
-- `convex/npc/router.ts`
-- `convex/npc/memory.ts`
-- `convex/npcEngine.ts`
-- `convex/ai.ts`
-- `convex/http.ts`
+- `convex/mapObjects.ts`
 - `convex/schema.ts`
 
-Tooling:
+## Related Docs
 
-- `scripts/test-npc-ai.mjs`
-- `src/sprited/SpritedTool.ts`
-
----
-
-## 17) Recommended Production Sequence
-
-1. Create sheet in sprited tool
-2. Register in `NPC_SPRITE_SHEETS`
-3. Create NPC sprite definition
-4. Place on map and save
-5. Assign instance name
-6. Fill profile (backstory/personality/knowledge/secrets/stats)
-7. Configure AI fields and prompt/slug
-8. Validate via panel `Test AI`
-9. Validate in game (`E`)
-10. Promote visibility as needed (`private` -> `public`/`system`)
+- `docs/LevelCreate.md` - map and build workflow that NPC placement depends on
+- `docs/Objects.md` - shared object definition and map-object save behavior
+- `docs/Items.md` - item/inventory workflows used by NPC inventories and quests
+- `docs/Combat.md` - hostile combat, aggro, and NPC defeat/respawn behavior
+- `docs/AuthPermissions.md` - profile visibility, ownership, and edit permissions
+- `docs/Operations.md` - admin scripts, backfills, and production operations
